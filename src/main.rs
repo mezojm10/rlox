@@ -1,10 +1,20 @@
 enum Opcode {
-    Constant(usize),
-    Return,
+    Return = 0,
+    Constant = 1,
+}
+
+impl Opcode {
+    fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Return),
+            1 => Some(Self::Constant),
+            _ => None,
+        }
+    }
 }
 
 struct Chunk {
-    codes: Vec<Opcode>,
+    codes: Vec<u8>,
     constants: Vec<Value>,
     lines: Vec<usize>,
 }
@@ -20,7 +30,7 @@ impl Chunk {
         }
     }
 
-    fn add_op(&mut self, code: Opcode, line: usize) {
+    fn add_op(&mut self, code: u8, line: usize) {
         self.codes.push(code);
         self.lines.push(line);
     }
@@ -34,21 +44,33 @@ impl Chunk {
         println!("== {} ==", name);
 
         let mut offset = 0;
-        for (i, code) in self.codes.iter().enumerate() {
+        loop {
+            if offset >= self.codes.len() {
+                return;
+            }
             print!("{:04}", offset);
-            if i > 0 && self.lines[i] == self.lines[i - 1] {
+            if offset > 0 && self.lines[offset] == self.lines[offset - 1] {
                 print!("   | ");
             } else {
-                print!("{:4} ", self.lines[i]);
+                print!("{:4} ", self.lines[offset]);
             }
             offset += {
-                match &code {
-                    Opcode::Constant(v) => {
-                        println!("{:16} {:4} {}", "OP_CONSTANT", v, &self.constants[*v]);
+                match Opcode::from_u8(self.codes[offset]) {
+                    Some(Opcode::Constant) => {
+                        println!(
+                            "{:16} {:4} {}",
+                            "OP_CONSTANT",
+                            &self.codes[offset + 1],
+                            &self.constants[self.codes[offset + 1] as usize]
+                        );
                         2
                     }
-                    Opcode::Return => {
+                    Some(Opcode::Return) => {
                         println!("{:16}", "OP_RETURN");
+                        1
+                    }
+                    None => {
+                        println!("{:16}", "Unknown opcode");
                         1
                     }
                 }
@@ -59,9 +81,10 @@ impl Chunk {
 
 fn main() {
     let mut chunk = Chunk::new();
-    let constant_index = chunk.add_constant(1.2);
-    chunk.add_op(Opcode::Constant(constant_index), 1);
-    chunk.add_op(Opcode::Return, 1);
+    let constant_index = chunk.add_constant(1.2) as u8;
+    chunk.add_op(Opcode::Constant as u8, 1);
+    chunk.add_op(constant_index, 1);
+    chunk.add_op(Opcode::Return as u8, 1);
 
     chunk.disassemble("test chunk");
 }
