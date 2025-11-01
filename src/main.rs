@@ -1,3 +1,7 @@
+use std::{io::Write, process::exit};
+
+use clap::Parser;
+
 enum Opcode {
     Return = 0,
     Constant = 1,
@@ -203,24 +207,71 @@ impl Chunk {
     }
 }
 
-fn main() {
-    let mut vm = VM::new();
-    let mut chunk = Chunk::new();
-    // Check if index is larger than u8
-    let constant_index = chunk.add_constant(1.2) as u8;
-    chunk.add_op(Opcode::Constant.into(), 1);
-    chunk.add_op(constant_index, 1);
-    let constant_index = chunk.add_constant(3.4) as u8;
-    chunk.add_op(Opcode::Constant.into(), 1);
-    chunk.add_op(constant_index, 1);
-    chunk.add_op(Opcode::Add.into(), 1);
-    let constant_index = chunk.add_constant(5.6) as u8;
-    chunk.add_op(Opcode::Constant.into(), 1);
-    chunk.add_op(constant_index, 1);
-    chunk.add_op(Opcode::Divide.into(), 1);
-    chunk.add_op(Opcode::Negate.into(), 1);
-    chunk.add_op(Opcode::Return.into(), 1);
+#[derive(Parser)]
+struct Args {
+    file: Option<std::path::PathBuf>,
+}
 
-    // chunk.disassemble("test chunk");
-    vm.interpret(chunk);
+fn main() {
+    let args = Args::parse();
+
+    if let Some(path) = args.file {
+        // Run file
+        if !path.is_file() {
+            println!("Cannot access file: {}", path.to_string_lossy());
+            return;
+        }
+        let content = std::fs::read_to_string(path).unwrap();
+        match interpret(&content) {
+            InterpretRes::Ok => exit(0),
+            InterpretRes::CompileError => exit(65),
+            InterpretRes::RuntimeError => exit(70),
+        }
+    } else {
+        // Run Repl
+        repl();
+    }
+}
+
+fn repl() {
+    let mut buffer = String::new();
+    loop {
+        print!("> ");
+        std::io::stdout().flush().unwrap();
+        let read_bytes = std::io::stdin().read_line(&mut buffer).unwrap();
+        if read_bytes == 0 {
+            println!("");
+            break;
+        }
+
+        interpret(&buffer);
+        buffer.clear();
+    }
+}
+
+fn interpret(content: &str) -> InterpretRes {
+    compile(&content);
+    InterpretRes::Ok
+}
+
+mod scanner;
+
+use scanner::{Scanner, TokenType};
+
+fn compile(content: &str) {
+    let mut scanner = Scanner::new(content);
+    let mut line: isize = -1;
+    loop {
+        let token = scanner.scan_token();
+        if token.line as isize != line {
+            print!("{:04} ", token.line);
+            line = token.line as isize;
+        } else {
+            print!(" | ")
+        }
+        token.print_info();
+        if token.tok_type == TokenType::Eof {
+            break;
+        }
+    }
 }
