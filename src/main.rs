@@ -1,6 +1,11 @@
 enum Opcode {
     Return = 0,
     Constant = 1,
+    Negate = 2,
+    Add = 3,
+    Subtract = 4,
+    Multiply = 5,
+    Divide = 6,
 }
 
 impl Opcode {
@@ -8,9 +13,108 @@ impl Opcode {
         match value {
             0 => Some(Self::Return),
             1 => Some(Self::Constant),
+            2 => Some(Self::Negate),
+            3 => Some(Self::Add),
+            4 => Some(Self::Subtract),
+            5 => Some(Self::Multiply),
+            6 => Some(Self::Divide),
             _ => None,
         }
     }
+}
+
+impl From<Opcode> for u8 {
+    fn from(value: Opcode) -> Self {
+        value as u8
+    }
+}
+
+struct VM {
+    chunk: Chunk,
+    ip: usize,
+    stack: [Value; 256],
+    sp: u8,
+}
+
+impl VM {
+    fn new() -> Self {
+        VM {
+            chunk: Chunk::new(),
+            ip: 0,
+            stack: [0.; 256],
+            sp: 0,
+        }
+    }
+
+    fn push(&mut self, value: Value) {
+        if self.sp == 255 {
+            panic!("Stack overflow!");
+        }
+        self.stack[self.sp as usize] = value;
+        self.sp += 1;
+    }
+
+    fn pop(&mut self) -> Value {
+        self.sp -= 1;
+        self.stack[self.sp as usize]
+    }
+
+    fn interpret(&mut self, chunk: Chunk) -> InterpretRes {
+        self.ip = 0;
+        self.chunk = chunk;
+        self.run()
+    }
+
+    fn run(&mut self) -> InterpretRes {
+        loop {
+            let instruction = self.chunk.codes[self.ip];
+            self.ip += 1;
+
+            match Opcode::from_u8(instruction) {
+                Some(Opcode::Return) => {
+                    let value = self.pop();
+                    println!("{}", value);
+                    return InterpretRes::Ok;
+                }
+                Some(Opcode::Constant) => {
+                    let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
+                    self.push(value);
+                    self.ip += 1;
+                }
+                Some(Opcode::Negate) => {
+                    // Negate the top of the stack in-place
+                    self.stack[self.sp as usize - 1] = -self.stack[self.sp as usize - 1];
+                }
+                Some(Opcode::Add) => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    self.push(x + y);
+                }
+                Some(Opcode::Subtract) => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    self.push(x - y);
+                }
+                Some(Opcode::Multiply) => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    self.push(x * y);
+                }
+                Some(Opcode::Divide) => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    self.push(x / y);
+                }
+                None => return InterpretRes::CompileError,
+            }
+        }
+    }
+}
+
+enum InterpretRes {
+    Ok,
+    CompileError,
+    RuntimeError,
 }
 
 struct Chunk {
@@ -69,6 +173,26 @@ impl Chunk {
                         println!("{:16}", "OP_RETURN");
                         1
                     }
+                    Some(Opcode::Negate) => {
+                        println!("{:16}", "OP_NEGATE");
+                        1
+                    }
+                    Some(Opcode::Add) => {
+                        println!("{:16}", "OP_ADD");
+                        1
+                    }
+                    Some(Opcode::Subtract) => {
+                        println!("{:16}", "OP_SUBTRACT");
+                        1
+                    }
+                    Some(Opcode::Multiply) => {
+                        println!("{:16}", "OP_MULTIPLY");
+                        1
+                    }
+                    Some(Opcode::Divide) => {
+                        println!("{:16}", "OP_DIVIDE");
+                        1
+                    }
                     None => {
                         println!("{:16}", "Unknown opcode");
                         1
@@ -80,11 +204,23 @@ impl Chunk {
 }
 
 fn main() {
+    let mut vm = VM::new();
     let mut chunk = Chunk::new();
+    // Check if index is larger than u8
     let constant_index = chunk.add_constant(1.2) as u8;
-    chunk.add_op(Opcode::Constant as u8, 1);
+    chunk.add_op(Opcode::Constant.into(), 1);
     chunk.add_op(constant_index, 1);
-    chunk.add_op(Opcode::Return as u8, 1);
+    let constant_index = chunk.add_constant(3.4) as u8;
+    chunk.add_op(Opcode::Constant.into(), 1);
+    chunk.add_op(constant_index, 1);
+    chunk.add_op(Opcode::Add.into(), 1);
+    let constant_index = chunk.add_constant(5.6) as u8;
+    chunk.add_op(Opcode::Constant.into(), 1);
+    chunk.add_op(constant_index, 1);
+    chunk.add_op(Opcode::Divide.into(), 1);
+    chunk.add_op(Opcode::Negate.into(), 1);
+    chunk.add_op(Opcode::Return.into(), 1);
 
-    chunk.disassemble("test chunk");
+    // chunk.disassemble("test chunk");
+    vm.interpret(chunk);
 }
