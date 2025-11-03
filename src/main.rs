@@ -1,6 +1,7 @@
-use std::{io::Write, process::exit};
+use std::io::Write;
 
 use clap::Parser;
+use miette::{Context, IntoDiagnostic, Result};
 
 enum Opcode {
     Return = 0,
@@ -212,28 +213,22 @@ struct Args {
     file: Option<std::path::PathBuf>,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(path) = args.file {
         // Run file
-        if !path.is_file() {
-            println!("Cannot access file: {}", path.to_string_lossy());
-            return;
-        }
-        let content = std::fs::read_to_string(path).unwrap();
-        match interpret(&content) {
-            InterpretRes::Ok => exit(0),
-            InterpretRes::CompileError => exit(65),
-            InterpretRes::RuntimeError => exit(70),
-        }
+        let content = std::fs::read_to_string(&path)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("reading '{}' failed", path.display()))?;
+        compile(&content)
     } else {
         // Run Repl
-        repl();
+        repl()
     }
 }
 
-fn repl() {
+fn repl() -> Result<()> {
     let mut buffer = String::new();
     loop {
         print!("> ");
@@ -244,34 +239,31 @@ fn repl() {
             break;
         }
 
-        interpret(&buffer);
+        if let Err(report) = compile(&buffer) {
+            eprintln!("{:?}", report);
+        }
         buffer.clear();
     }
-}
 
-fn interpret(content: &str) -> InterpretRes {
-    compile(&content);
-    InterpretRes::Ok
+    Ok(())
 }
 
 mod scanner;
 
-use scanner::{Scanner, TokenType};
+use scanner::Scanner;
 
-fn compile(content: &str) {
-    let mut scanner = Scanner::new(content);
+fn compile(content: &str) -> Result<()> {
     let mut line: isize = -1;
-    loop {
-        let token = scanner.scan_token();
+    for token in Scanner::new(content) {
+        let token = token?;
         if token.line as isize != line {
             print!("{:04} ", token.line);
             line = token.line as isize;
         } else {
             print!(" | ")
         }
-        token.print_info();
-        if token.tok_type == TokenType::Eof {
-            break;
-        }
+        println!("{}", token);
     }
+
+    Ok(())
 }
