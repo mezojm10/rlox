@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 
 use miette::{LabeledSpan, Result};
 
-pub struct Scanner<'a> {
+pub struct Lexer<'a> {
     source: &'a str,
     rest: &'a str,
     current: usize,
@@ -112,9 +112,9 @@ impl<'a> Display for Token<'a> {
     }
 }
 
-impl<'a> Scanner<'a> {
+impl<'a> Lexer<'a> {
     pub fn new(source: &'a str) -> Self {
-        Scanner {
+        Lexer {
             current: 0,
             start: 0,
             source: source,
@@ -282,7 +282,7 @@ impl<'a> Scanner<'a> {
     }
 }
 
-impl<'a> Iterator for Scanner<'a> {
+impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
