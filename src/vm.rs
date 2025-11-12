@@ -1,4 +1,4 @@
-enum Opcode {
+pub enum Opcode {
     Return = 0,
     Constant = 1,
     Negate = 2,
@@ -6,6 +6,7 @@ enum Opcode {
     Subtract = 4,
     Multiply = 5,
     Divide = 6,
+    Not = 7,
 }
 
 impl Opcode {
@@ -18,6 +19,7 @@ impl Opcode {
             4 => Some(Self::Subtract),
             5 => Some(Self::Multiply),
             6 => Some(Self::Divide),
+            7 => Some(Self::Not),
             _ => None,
         }
     }
@@ -37,11 +39,11 @@ pub struct VM {
 }
 
 impl VM {
-    fn new() -> Self {
+    pub fn new() -> Self {
         VM {
             chunk: Chunk::new(),
             ip: 0,
-            stack: [0.; 256],
+            stack: [Value::Nil; 256],
             sp: 0,
         }
     }
@@ -59,13 +61,18 @@ impl VM {
         self.stack[self.sp as usize]
     }
 
-    fn interpret(&mut self, chunk: Chunk) -> InterpretRes {
+    fn peek(&self) -> Value {
+        self.stack[self.sp as usize - 1]
+    }
+
+    pub fn interpret(&mut self, chunk: Chunk) -> miette::Result<()> {
         self.ip = 0;
         self.chunk = chunk;
         self.run()
     }
 
-    fn run(&mut self) -> InterpretRes {
+    fn run(&mut self) -> miette::Result<()> {
+        self.chunk.disassemble("Test Chunk");
         loop {
             let instruction = self.chunk.codes[self.ip];
             self.ip += 1;
@@ -73,60 +80,98 @@ impl VM {
             match Opcode::from_u8(instruction) {
                 Some(Opcode::Return) => {
                     let value = self.pop();
-                    println!("{}", value);
-                    return InterpretRes::Ok;
+                    println!("{value}");
+                    return Ok(());
                 }
                 Some(Opcode::Constant) => {
                     let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
                     self.push(value);
                     self.ip += 1;
                 }
+                Some(Opcode::Not) => {
+                    let val = self.pop();
+                    match val {
+                        Value::Bool(b) => self.push(Value::Bool(!b)),
+                        _ => {
+                            return Err(miette::miette!(
+                                "Logical NOT operation requires a boolean."
+                            ))
+                        }
+                    }
+                }
                 Some(Opcode::Negate) => {
                     // Negate the top of the stack in-place
-                    self.stack[self.sp as usize - 1] = -self.stack[self.sp as usize - 1];
+                    let val = self.peek();
+                    if let Value::Number(n) = val {
+                        self.stack[self.sp as usize - 1] = Value::Number(-n);
+                    } else {
+                        return Err(miette::miette!("Negation must be a number."));
+                    }
                 }
                 Some(Opcode::Add) => {
                     let y = self.pop();
                     let x = self.pop();
-                    self.push(x + y);
+                    match (x, y) {
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(Value::Number(a + b));
+                        }
+                        _ => return Err(miette::miette!("Addition requires two numbers.")),
+                    }
                 }
                 Some(Opcode::Subtract) => {
                     let y = self.pop();
                     let x = self.pop();
-                    self.push(x - y);
+                    match (x, y) {
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(Value::Number(a - b));
+                            continue;
+                        }
+                        _ => return Err(miette::miette!("Subtraction requires two numbers.")),
+                    }
                 }
                 Some(Opcode::Multiply) => {
                     let y = self.pop();
                     let x = self.pop();
-                    self.push(x * y);
+                    match (x, y) {
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(Value::Number(a * b));
+                            continue;
+                        }
+                        _ => return Err(miette::miette!("Multiplication requires two numbers.")),
+                    }
                 }
                 Some(Opcode::Divide) => {
                     let y = self.pop();
                     let x = self.pop();
-                    self.push(x / y);
+                    match (x, y) {
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(Value::Number(a / b));
+                            continue;
+                        }
+                        _ => return Err(miette::miette!("Division requires two numbers.")),
+                    }
                 }
-                None => return InterpretRes::CompileError,
+                None => return Err(miette::miette!("Unknown opcode encountered.")),
             }
         }
     }
 }
 
-enum InterpretRes {
-    Ok,
-    CompileError,
-    RuntimeError,
-}
-
-struct Chunk {
+pub struct Chunk {
     codes: Vec<u8>,
     constants: Vec<Value>,
     lines: Vec<usize>,
 }
 
-type Value = f64;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Value {
+    Number(f64),
+    Bool(bool),
+    Nil,
+}
 
 impl Chunk {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Chunk {
             codes: Vec::new(),
             constants: Vec::new(),
@@ -134,14 +179,30 @@ impl Chunk {
         }
     }
 
-    fn add_op(&mut self, code: u8, line: usize) {
-        self.codes.push(code);
+    pub fn emit_op(&mut self, code: Opcode, line: usize) {
+        self.codes.push(code.into());
         self.lines.push(line);
     }
 
     fn add_constant(&mut self, value: Value) -> usize {
         self.constants.push(value);
         self.constants.len() - 1
+    }
+
+    pub fn emit_constant(&mut self, value: Value, line: usize) -> miette::Result<()> {
+        // TODO: Handle constant index overflow
+        let constant_index = self.add_constant(value);
+        if constant_index > u8::MAX as usize {
+            return Err(miette::miette!("Constant index overflow."));
+        }
+        self.emit_op(Opcode::Constant, line);
+        self.codes.push(constant_index as u8);
+        self.lines.push(line);
+        Ok(())
+    }
+
+    pub fn emit_return(&mut self, line: usize) {
+        self.emit_op(Opcode::Return, line);
     }
 
     fn disassemble(&self, name: &str) {
@@ -158,47 +219,64 @@ impl Chunk {
             } else {
                 print!("{:4} ", self.lines[offset]);
             }
-            offset += {
-                match Opcode::from_u8(self.codes[offset]) {
-                    Some(Opcode::Constant) => {
-                        println!(
-                            "{:16} {:4} {}",
-                            "OP_CONSTANT",
-                            &self.codes[offset + 1],
-                            &self.constants[self.codes[offset + 1] as usize]
-                        );
-                        2
-                    }
-                    Some(Opcode::Return) => {
-                        println!("{:16}", "OP_RETURN");
-                        1
-                    }
-                    Some(Opcode::Negate) => {
-                        println!("{:16}", "OP_NEGATE");
-                        1
-                    }
-                    Some(Opcode::Add) => {
-                        println!("{:16}", "OP_ADD");
-                        1
-                    }
-                    Some(Opcode::Subtract) => {
-                        println!("{:16}", "OP_SUBTRACT");
-                        1
-                    }
-                    Some(Opcode::Multiply) => {
-                        println!("{:16}", "OP_MULTIPLY");
-                        1
-                    }
-                    Some(Opcode::Divide) => {
-                        println!("{:16}", "OP_DIVIDE");
-                        1
-                    }
-                    None => {
-                        println!("{:16}", "Unknown opcode");
-                        1
-                    }
-                }
-            };
+            offset += self.disassemble_op(offset);
+        }
+    }
+
+    fn disassemble_op(&self, offset: usize) -> usize {
+        match Opcode::from_u8(self.codes[offset]) {
+            Some(Opcode::Constant) => {
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_CONSTANT",
+                    &self.codes[offset + 1],
+                    &self.constants[self.codes[offset + 1] as usize]
+                );
+                2
+            }
+            Some(Opcode::Return) => {
+                println!("{:16}", "OP_RETURN");
+                1
+            }
+            Some(Opcode::Negate) => {
+                println!("{:16}", "OP_NEGATE");
+                1
+            }
+            Some(Opcode::Add) => {
+                println!("{:16}", "OP_ADD");
+                1
+            }
+            Some(Opcode::Subtract) => {
+                println!("{:16}", "OP_SUBTRACT");
+                1
+            }
+            Some(Opcode::Multiply) => {
+                println!("{:16}", "OP_MULTIPLY");
+                1
+            }
+            Some(Opcode::Divide) => {
+                println!("{:16}", "OP_DIVIDE");
+                1
+            }
+            Some(Opcode::Not) => {
+                println!("{:16}", "OP_NOT");
+                1
+            }
+            None => {
+                println!("{:16}", "Unknown opcode");
+                1
+            }
+        }
+    }
+}
+
+use std::fmt;
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Number(n) => write!(f, "{n}"),
+            Value::Bool(b) => write!(f, "{b}"),
+            Value::Nil => write!(f, "nil"),
         }
     }
 }

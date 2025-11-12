@@ -2,21 +2,24 @@ use std::fmt::{self, Display};
 
 use miette::{LabeledSpan, Result};
 
-pub struct Lexer<'a> {
-    source: &'a str,
-    rest: &'a str,
+pub struct Lexer<'de> {
+    source: &'de str,
+    rest: &'de str,
     current: usize,
     start: usize,
     line: usize,
+    peeked: Option<Result<Token<'de>>>,
 }
 
-pub struct Token<'a> {
-    kind: TokenType,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Token<'de> {
+    pub kind: TokenType,
     pub line: usize,
-    origin: &'a str,
+    pub offset: usize,
+    pub origin: &'de str,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenType {
     // Single-character tokens.
     LeftParen,
@@ -62,7 +65,7 @@ pub enum TokenType {
     While,
 }
 
-impl<'a> Display for Token<'a> {
+impl<'de> Display for Token<'de> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let origin = self.origin;
         write!(
@@ -112,14 +115,15 @@ impl<'a> Display for Token<'a> {
     }
 }
 
-impl<'a> Lexer<'a> {
-    pub fn new(source: &'a str) -> Self {
+impl<'de> Lexer<'de> {
+    pub fn new(source: &'de str) -> Self {
         Lexer {
             current: 0,
             start: 0,
             source: source,
             rest: source,
             line: 1,
+            peeked: None,
         }
     }
 
@@ -146,7 +150,7 @@ impl<'a> Lexer<'a> {
                 }
                 // Skip comments (// to end of line)
                 '/' => {
-                    if self.rest.starts_with('/') {
+                    if self.rest[1..].starts_with('/') {
                         // It's a comment, skip to end of line
                         let newline = self.rest.find('\n').unwrap_or(self.rest.len());
                         self.current += newline;
@@ -160,7 +164,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn scan_string(&mut self) -> Result<Token<'a>> {
+    fn scan_string(&mut self) -> Result<Token<'de>> {
         let mut chars = self.rest.chars();
         loop {
             let c = match chars.next() {
@@ -189,7 +193,7 @@ impl<'a> Lexer<'a> {
         .with_source_code(self.source.to_string()))
     }
 
-    fn scan_number(&mut self) -> Result<Token<'a>> {
+    fn scan_number(&mut self) -> Result<Token<'de>> {
         self.scan_digits(self.rest);
 
         // Look for a fractional part
@@ -214,7 +218,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn scan_digits(&mut self, num: &'a str) -> usize {
+    fn scan_digits(&mut self, num: &'de str) -> usize {
         let first_non_digit = num.find(|c| !matches!(c, '0'..='9')).unwrap_or(num.len());
 
         self.rest = &num[first_non_digit..];
@@ -222,7 +226,7 @@ impl<'a> Lexer<'a> {
         first_non_digit
     }
 
-    fn scan_identifier(&mut self) -> Token<'a> {
+    fn scan_identifier(&mut self) -> Token<'de> {
         let first_non_ident_char = self
             .rest
             .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
@@ -263,30 +267,58 @@ impl<'a> Lexer<'a> {
         Some(c)
     }
 
-    fn expect(&mut self, expected: char) -> bool {
-        if self.rest.starts_with(expected) {
-            self.current += 1;
-            self.rest = &self.rest[expected.len_utf8()..];
-            true
-        } else {
-            false
+    pub fn expect(&mut self, expected: TokenType, unexpected: &str) -> Result<Token<'de>> {
+        self.expect_where(|t| t.kind == expected, unexpected)
+    }
+
+    pub fn expect_where(
+        &mut self,
+        mut check: impl FnMut(&Token<'de>) -> bool,
+        unexpected: &str,
+    ) -> Result<Token<'de>> {
+        match self.next() {
+            Some(Ok(tok)) if check(&tok) => Ok(tok),
+            Some(Ok(token)) => Err(miette::miette! {
+                labels = vec![
+                    LabeledSpan::at(token.offset..token.offset + token.origin.len(), "here")
+                ],
+                help = format!("Expected {token:?}"),
+                "{unexpected}"
+            }
+            .with_source_code(self.source.to_string())),
+            Some(Err(e)) => Err(e),
+            None => Err(miette::miette!("Unexpected EOF")),
         }
     }
 
-    fn make_token(&self, tok_type: TokenType, start: &'a str) -> Token<'a> {
+    pub fn peek(&mut self) -> Option<&Result<Token<'de>>> {
+        if self.peeked.is_some() {
+            return self.peeked.as_ref();
+        }
+
+        self.peeked = self.next();
+        self.peeked.as_ref()
+    }
+
+    fn make_token(&self, tok_type: TokenType, start: &'de str) -> Token<'de> {
         Token {
             kind: tok_type,
             line: self.line,
+            offset: self.start,
             origin: start,
         }
     }
 }
 
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>>;
+impl<'de> Iterator for Lexer<'de> {
+    type Item = Result<Token<'de>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         {
+            if self.peeked.is_some() {
+                return self.peeked.take();
+            }
+
             self.skip_whitespace();
 
             self.start = self.current;
@@ -345,7 +377,9 @@ impl<'a> Iterator for Lexer<'a> {
                 Started::Number => Some(self.scan_number()),
                 Started::Ident => Some(Ok(self.scan_identifier())),
                 Started::IfEqualElse(yes, no) => {
-                    let token = if self.expect('=') {
+                    let token = if self.rest.starts_with('=') {
+                        self.current += 1;
+                        self.rest = &self.rest[1..];
                         self.make_token(yes, &self.source[self.start..self.current])
                     } else {
                         self.make_token(no, c_str)

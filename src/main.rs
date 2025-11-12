@@ -1,6 +1,6 @@
 use clap::Parser;
 use miette::{Context, IntoDiagnostic, Result};
-use rlox::Lexer;
+use rlox::VM;
 use std::io::Write;
 
 #[derive(Parser)]
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
         let content = std::fs::read_to_string(&path)
             .into_diagnostic()
             .wrap_err_with(|| format!("reading '{}' failed", path.display()))?;
-        compile(&content);
+        compile(&content)?;
         Ok(())
     } else {
         // Run Repl
@@ -35,29 +35,18 @@ fn repl() -> Result<()> {
             break;
         }
 
-        compile(&buffer);
+        compile(&buffer)?;
+
         buffer.clear();
     }
 
     Ok(())
 }
 
-fn compile(content: &str) {
-    let mut line: isize = -1;
-    for token in Lexer::new(content) {
-        let token = match token {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("{e:?}");
-                continue;
-            }
-        };
-        if token.line as isize != line {
-            print!("{:04} ", token.line);
-            line = token.line as isize;
-        } else {
-            print!(" | ")
-        }
-        println!("{}", token);
-    }
+fn compile(content: &str) -> Result<()> {
+    let mut parser = rlox::Parser::new(content);
+    parser.expr()?;
+    parser.bytecode_chunk.emit_return(0);
+    let mut vm = VM::new();
+    vm.interpret(parser.bytecode_chunk)
 }
