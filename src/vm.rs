@@ -13,6 +13,7 @@ pub enum Opcode {
     Less = 11,
     Equal = 12,
     Greater = 13,
+    ConstantU16 = 14,
 }
 
 impl Opcode {
@@ -32,6 +33,7 @@ impl Opcode {
             11 => Some(Self::Less),
             12 => Some(Self::Equal),
             13 => Some(Self::Greater),
+            14 => Some(Self::ConstantU16),
             _ => None,
         }
     }
@@ -100,6 +102,14 @@ impl VM {
                     let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
                     self.push(value);
                     self.ip += 1;
+                }
+                Some(Opcode::ConstantU16) => {
+                    let high_byte = self.chunk.codes[self.ip] as u16;
+                    let low_byte = self.chunk.codes[self.ip + 1] as u16;
+                    let constant_index = (high_byte << 8) | low_byte;
+                    let value = self.chunk.constants[constant_index as usize];
+                    self.push(value);
+                    self.ip += 2;
                 }
                 Some(Opcode::True) => {
                     self.push(Value::Bool(true));
@@ -313,11 +323,21 @@ impl Chunk {
     }
 
     pub fn emit_constant(&mut self, value: Value, line: usize) -> miette::Result<()> {
-        // TODO: Handle constant index overflow
         let constant_index = self.add_constant(value);
         if constant_index > u8::MAX as usize {
-            return Err(miette::miette!("Constant index overflow."));
+            if constant_index > u16::MAX as usize {
+                return Err(miette::miette!("Constant index overflow."));
+            }
+            // Use ConstantU16 opcode
+            self.emit_op(Opcode::ConstantU16, line);
+            let high_byte = ((constant_index as u16) >> 8) as u8;
+            let low_byte = (constant_index as u16 & 0xFF) as u8;
+            self.codes.push(high_byte);
+            self.codes.push(low_byte);
+            self.lines.push(line);
+            return Ok(());
         }
+        // Use Constant opcode
         self.emit_op(Opcode::Constant, line);
         self.codes.push(constant_index as u8);
         self.lines.push(line);
@@ -356,6 +376,16 @@ impl Chunk {
                     &self.constants[self.codes[offset + 1] as usize]
                 );
                 2
+            }
+            Some(Opcode::ConstantU16) => {
+                let high_byte = self.codes[offset + 1] as u16;
+                let low_byte = self.codes[offset + 2] as u16;
+                let constant_index = (high_byte << 8) | low_byte;
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_CONSTANT_U16", constant_index, &self.constants[constant_index as usize]
+                );
+                3
             }
             Some(Opcode::Return) => {
                 println!("{:16}", "OP_RETURN");
