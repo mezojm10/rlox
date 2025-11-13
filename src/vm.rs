@@ -7,6 +7,12 @@ pub enum Opcode {
     Multiply = 5,
     Divide = 6,
     Not = 7,
+    True = 8,
+    False = 9,
+    Nil = 10,
+    Less = 11,
+    Equal = 12,
+    Greater = 13,
 }
 
 impl Opcode {
@@ -20,6 +26,12 @@ impl Opcode {
             5 => Some(Self::Multiply),
             6 => Some(Self::Divide),
             7 => Some(Self::Not),
+            8 => Some(Self::True),
+            9 => Some(Self::False),
+            10 => Some(Self::Nil),
+            11 => Some(Self::Less),
+            12 => Some(Self::Equal),
+            13 => Some(Self::Greater),
             _ => None,
         }
     }
@@ -89,10 +101,20 @@ impl VM {
                     self.push(value);
                     self.ip += 1;
                 }
+                Some(Opcode::True) => {
+                    self.push(Value::Bool(true));
+                }
+                Some(Opcode::False) => {
+                    self.push(Value::Bool(false));
+                }
+                Some(Opcode::Nil) => {
+                    self.push(Value::Nil);
+                }
                 Some(Opcode::Not) => {
                     let val = self.pop();
                     match val {
                         Value::Bool(b) => self.push(Value::Bool(!b)),
+                        Value::Nil => self.push(Value::Bool(true)),
                         _ => {
                             return err(
                                 format!("Operand for NOT must be a boolean, got {}", val.kind())
@@ -188,6 +210,51 @@ impl VM {
                             return err(
                                 format!(
                                     "Division requires two numbers, got {} and {}",
+                                    x.kind(),
+                                    y.kind()
+                                )
+                                .as_str(),
+                                self.chunk.lines[self.ip - 1],
+                            )
+                        }
+                    }
+                }
+                Some(Opcode::Equal) => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    self.push(Value::Bool(x == y));
+                }
+                Some(Opcode::Greater) => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    match (x, y) {
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(Value::Bool(a > b));
+                        }
+                        _ => {
+                            return err(
+                                format!(
+                                    "Greater comparison requires two numbers, got {} and {}",
+                                    x.kind(),
+                                    y.kind()
+                                )
+                                .as_str(),
+                                self.chunk.lines[self.ip - 1],
+                            )
+                        }
+                    }
+                }
+                Some(Opcode::Less) => {
+                    let y = self.pop();
+                    let x = self.pop();
+                    match (x, y) {
+                        (Value::Number(a), Value::Number(b)) => {
+                            self.push(Value::Bool(a < b));
+                        }
+                        _ => {
+                            return err(
+                                format!(
+                                    "Less comparison requires two numbers, got {} and {}",
                                     x.kind(),
                                     y.kind()
                                 )
@@ -316,6 +383,30 @@ impl Chunk {
             }
             Some(Opcode::Not) => {
                 println!("{:16}", "OP_NOT");
+                1
+            }
+            Some(Opcode::True) => {
+                println!("{:16}", "OP_TRUE");
+                1
+            }
+            Some(Opcode::False) => {
+                println!("{:16}", "OP_FALSE");
+                1
+            }
+            Some(Opcode::Nil) => {
+                println!("{:16}", "OP_NIL");
+                1
+            }
+            Some(Opcode::Less) => {
+                println!("{:16}", "OP_LESS");
+                1
+            }
+            Some(Opcode::Equal) => {
+                println!("{:16}", "OP_EQUAL");
+                1
+            }
+            Some(Opcode::Greater) => {
+                println!("{:16}", "OP_GREATER");
                 1
             }
             None => {

@@ -36,13 +36,13 @@ impl<'de> Parser<'de> {
                 self.bytecode_chunk.emit_constant(Value::Number(n), lhs.line)?;
             }
             TokenType::True => {
-                self.bytecode_chunk.emit_constant(Value::Bool(true), lhs.line)?;
+                self.bytecode_chunk.emit_op(Opcode::True, lhs.line);
             }
             TokenType::False => {
-                self.bytecode_chunk.emit_constant(Value::Bool(false), lhs.line)?;
+                self.bytecode_chunk.emit_op(Opcode::False, lhs.line);
             }
             TokenType::Nil => {
-                self.bytecode_chunk.emit_constant(Value::Nil, lhs.line)?;
+                self.bytecode_chunk.emit_op(Opcode::Nil, lhs.line);
             }
 
             // Groups
@@ -101,6 +101,7 @@ impl<'de> Parser<'de> {
                     ..
                 }) => break,
 
+                // Valid operators
                 Some(Token {
                     kind: TokenType::Minus,
                     ..
@@ -164,12 +165,13 @@ impl<'de> Parser<'de> {
                             LabeledSpan::at(token.offset..token.origin.len(), "here"),
                         ],
                         help = format!("Unexpected {token:?}"),
-                        "Expected an infix operator"
+                        "Expected an infix or postfix operator"
                     }
                     .with_source_code(self.source.to_string()))
                 }
             };
 
+            // Postfix operators
             if let Some((l_bp, ())) = postfix_binding_power(op) {
                 if l_bp < min_bp {
                     break;
@@ -179,6 +181,7 @@ impl<'de> Parser<'de> {
                 continue;
             }
 
+            // Infix operators
             if let Some((l_bp, r_bp)) = infix_binding_power(op) {
                 if l_bp < min_bp {
                     break;
@@ -193,6 +196,21 @@ impl<'de> Parser<'de> {
                     Op::Minus => self.bytecode_chunk.emit_op(Opcode::Subtract, lhs.line),
                     Op::Star => self.bytecode_chunk.emit_op(Opcode::Multiply, lhs.line),
                     Op::Slash => self.bytecode_chunk.emit_op(Opcode::Divide, lhs.line),
+                    Op::EqualEqual => self.bytecode_chunk.emit_op(Opcode::Equal, lhs.line),
+                    Op::BangEqual => {
+                        self.bytecode_chunk.emit_op(Opcode::Equal, lhs.line);
+                        self.bytecode_chunk.emit_op(Opcode::Not, lhs.line);
+                    }
+                    Op::Less => self.bytecode_chunk.emit_op(Opcode::Less, lhs.line),
+                    Op::LessEqual => {
+                        self.bytecode_chunk.emit_op(Opcode::Greater, lhs.line);
+                        self.bytecode_chunk.emit_op(Opcode::Not, lhs.line);
+                    }
+                    Op::Greater => self.bytecode_chunk.emit_op(Opcode::Greater, lhs.line),
+                    Op::GreaterEqual => {
+                        self.bytecode_chunk.emit_op(Opcode::Less, lhs.line);
+                        self.bytecode_chunk.emit_op(Opcode::Not, lhs.line);
+                    }
                     _ => {}
                 }
 
