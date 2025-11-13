@@ -73,6 +73,7 @@ impl VM {
 
     fn run(&mut self) -> miette::Result<()> {
         self.chunk.disassemble("Test Chunk");
+        let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
         loop {
             let instruction = self.chunk.codes[self.ip];
             self.ip += 1;
@@ -93,9 +94,11 @@ impl VM {
                     match val {
                         Value::Bool(b) => self.push(Value::Bool(!b)),
                         _ => {
-                            return Err(miette::miette!(
-                                "Logical NOT operation requires a boolean."
-                            ))
+                            return err(
+                                format!("Operand for NOT must be a boolean, got {}", val.kind())
+                                    .as_str(),
+                                self.chunk.lines[self.ip - 1],
+                            )
                         }
                     }
                 }
@@ -105,7 +108,10 @@ impl VM {
                     if let Value::Number(n) = val {
                         self.stack[self.sp as usize - 1] = Value::Number(-n);
                     } else {
-                        return Err(miette::miette!("Negation must be a number."));
+                        return err(
+                            format!("Negation must be a number, got {}", val.kind()).as_str(),
+                            self.chunk.lines[self.ip - 1],
+                        );
                     }
                 }
                 Some(Opcode::Add) => {
@@ -115,7 +121,17 @@ impl VM {
                         (Value::Number(a), Value::Number(b)) => {
                             self.push(Value::Number(a + b));
                         }
-                        _ => return Err(miette::miette!("Addition requires two numbers.")),
+                        _ => {
+                            return err(
+                                format!(
+                                    "Addition requires two numbers, got {} and {}",
+                                    x.kind(),
+                                    y.kind()
+                                )
+                                .as_str(),
+                                self.chunk.lines[self.ip - 1],
+                            )
+                        }
                     }
                 }
                 Some(Opcode::Subtract) => {
@@ -126,7 +142,17 @@ impl VM {
                             self.push(Value::Number(a - b));
                             continue;
                         }
-                        _ => return Err(miette::miette!("Subtraction requires two numbers.")),
+                        _ => {
+                            return err(
+                                format!(
+                                    "Subtraction requires two numbers, got {} and {}",
+                                    x.kind(),
+                                    y.kind()
+                                )
+                                .as_str(),
+                                self.chunk.lines[self.ip - 1],
+                            )
+                        }
                     }
                 }
                 Some(Opcode::Multiply) => {
@@ -137,7 +163,17 @@ impl VM {
                             self.push(Value::Number(a * b));
                             continue;
                         }
-                        _ => return Err(miette::miette!("Multiplication requires two numbers.")),
+                        _ => {
+                            return err(
+                                format!(
+                                    "Multiplication requires two numbers, got {} and {}",
+                                    x.kind(),
+                                    y.kind()
+                                )
+                                .as_str(),
+                                self.chunk.lines[self.ip - 1],
+                            )
+                        }
                     }
                 }
                 Some(Opcode::Divide) => {
@@ -148,10 +184,20 @@ impl VM {
                             self.push(Value::Number(a / b));
                             continue;
                         }
-                        _ => return Err(miette::miette!("Division requires two numbers.")),
+                        (x, y) => {
+                            return err(
+                                format!(
+                                    "Division requires two numbers, got {} and {}",
+                                    x.kind(),
+                                    y.kind()
+                                )
+                                .as_str(),
+                                self.chunk.lines[self.ip - 1],
+                            )
+                        }
                     }
                 }
-                None => return Err(miette::miette!("Unknown opcode encountered.")),
+                None => return err("Unknown opcode encountered.", self.chunk.lines[self.ip - 1]),
             }
         }
     }
@@ -168,6 +214,16 @@ pub enum Value {
     Number(f64),
     Bool(bool),
     Nil,
+}
+
+impl Value {
+    fn kind(&self) -> &str {
+        match self {
+            Value::Number(_) => "Number",
+            Value::Bool(_) => "Bool",
+            Value::Nil => "Nil",
+        }
+    }
 }
 
 impl Chunk {
