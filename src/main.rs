@@ -1,6 +1,5 @@
 use clap::Parser;
 use miette::{Context, IntoDiagnostic, Result};
-use rlox::VM;
 use std::io::Write;
 
 #[derive(Parser)]
@@ -46,7 +45,15 @@ fn repl() -> Result<()> {
 fn compile(content: &str) -> Result<()> {
     let mut parser = rlox::Parser::new(content);
     parser.expr()?;
-    parser.bytecode_chunk.emit_return(0);
-    let mut vm = VM::new();
-    vm.interpret(parser.bytecode_chunk)
+    parser.vm.chunk.emit_return(0);
+    match parser.vm.interpret() {
+        Ok(_) => {
+            parser.vm.free_all_objects();
+            Ok(())
+        }
+        e @ Err(_) => {
+            parser.vm.free_all_objects();
+            e
+        }
+    }
 }

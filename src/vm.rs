@@ -46,10 +46,11 @@ impl From<Opcode> for u8 {
 }
 
 pub struct VM {
-    chunk: Chunk,
+    pub chunk: Chunk,
     ip: usize,
     stack: [Value; 256],
     sp: u8,
+    pub objects: Option<NonNull<Object>>,
 }
 
 impl VM {
@@ -59,6 +60,7 @@ impl VM {
             ip: 0,
             stack: [Value::Nil; 256],
             sp: 0,
+            objects: None,
         }
     }
 
@@ -79,9 +81,29 @@ impl VM {
         self.stack[self.sp as usize - 1]
     }
 
-    pub fn interpret(&mut self, chunk: Chunk) -> miette::Result<()> {
+    pub fn allocate_string(&mut self, string: String) -> NonNull<Object> {
+        // Create the object and box it
+        let boxed = Box::new(Object {
+            kind: ObjectKind::String(string),
+            next: self.objects,
+        });
+
+        // Get a raw pointer to the boxed object
+        let ptr = NonNull::new(Box::into_raw(boxed)).expect("Box::into_raw returned null");
+
+        // Update the head of the linked list
+        self.objects = Some(ptr);
+
+        ptr
+    }
+
+    pub fn emit_string(&mut self, string: &str, line: usize) -> miette::Result<()> {
+        let string_object = self.allocate_string(string.to_string());
+        self.chunk.emit_constant(Value::Object(string_object), line)
+    }
+
+    pub fn interpret(&mut self) -> miette::Result<()> {
         self.ip = 0;
-        self.chunk = chunk;
         self.run()
     }
 
@@ -153,10 +175,14 @@ impl VM {
                         (Value::Number(a), Value::Number(b)) => {
                             self.push(Value::Number(a + b));
                         }
+                        (Value::Object(a), Value::Object(b)) => {
+                            let new_str = self.concatenate_strings(a, b)?;
+                            self.push(Value::Object(new_str));
+                        }
                         _ => {
                             return err(
                                 format!(
-                                    "Addition requires two numbers, got {} and {}",
+                                    "Both operands of + must be strings or numbers, got {} and {}",
                                     x.kind(),
                                     y.kind()
                                 )
@@ -278,6 +304,43 @@ impl VM {
             }
         }
     }
+
+    pub fn free_all_objects(&mut self) {
+        let mut current = self.objects;
+
+        while let Some(ptr) = current {
+            // Read the next pointer before dropping the current object
+            let boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
+            let next = boxed.next;
+
+            // Explicitly drop the boxed object
+            drop(boxed);
+
+            // Move to the next object
+            current = next;
+        }
+
+        self.objects = None;
+    }
+
+    fn concatenate_strings(
+        &mut self,
+        a: NonNull<Object>,
+        b: NonNull<Object>,
+    ) -> miette::Result<NonNull<Object>> {
+        let (mut a_str, b_str) = match (&unsafe { a.as_ref() }.kind, &unsafe { b.as_ref() }.kind) {
+            (ObjectKind::String(s), ObjectKind::String(b)) => (s.clone(), b),
+            (x, y) => {
+                return Err(miette::miette!(
+                    "Both operands of + must be strings or numbers, got {} and {}",
+                    x.kind(),
+                    y.kind()
+                ));
+            }
+        };
+        a_str.push_str(b_str);
+        Ok(self.allocate_string(a_str))
+    }
 }
 
 pub struct Chunk {
@@ -286,11 +349,36 @@ pub struct Chunk {
     lines: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub enum Value {
     Number(f64),
     Bool(bool),
+    Object(NonNull<Object>),
     Nil,
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Number(l0), Self::Number(r0)) => l0 == r0,
+            (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
+            // Compare object kinds for equality
+            // TODO: We only have strings so this makes sense for now, but in the future we may want to compare object contents
+            (Self::Object(l0), Self::Object(r0)) => unsafe { l0.as_ref().kind == r0.as_ref().kind },
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Object {
+    kind: ObjectKind,
+    next: Option<NonNull<Object>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjectKind {
+    String(String),
 }
 
 impl Value {
@@ -299,6 +387,15 @@ impl Value {
             Value::Number(_) => "Number",
             Value::Bool(_) => "Bool",
             Value::Nil => "Nil",
+            Value::Object(object) => unsafe { object.as_ref().kind.kind() },
+        }
+    }
+}
+
+impl ObjectKind {
+    fn kind(&self) -> &str {
+        match self {
+            ObjectKind::String(_) => "String",
         }
     }
 }
@@ -447,13 +544,22 @@ impl Chunk {
     }
 }
 
-use std::fmt;
+use std::{fmt, ptr::NonNull};
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Number(n) => write!(f, "{n}"),
             Value::Bool(b) => write!(f, "{b}"),
+            Value::Object(object) => write!(f, "{}", unsafe { object.as_ref() }),
             Value::Nil => write!(f, "nil"),
+        }
+    }
+}
+
+impl fmt::Display for Object {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            ObjectKind::String(s) => write!(f, "\"{s}\""),
         }
     }
 }

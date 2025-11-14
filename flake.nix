@@ -1,5 +1,5 @@
 {
-  description = "Flake for the typechecker zoo project";
+  description = "Flake for the rlox project";
 
   inputs = {
     flake-parts.url = "github:hercules-ci/flake-parts";

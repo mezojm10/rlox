@@ -6,7 +6,7 @@ use crate::vm::{self, Opcode, Value};
 pub struct Parser<'de> {
     source: &'de str,
     lexer: Lexer<'de>,
-    pub bytecode_chunk: vm::Chunk,
+    pub vm: vm::VM,
 }
 
 impl<'de> Parser<'de> {
@@ -14,7 +14,7 @@ impl<'de> Parser<'de> {
         Parser {
             source,
             lexer: Lexer::new(source),
-            bytecode_chunk: vm::Chunk::new(),
+            vm: vm::VM::new(),
         }
     }
 
@@ -33,16 +33,19 @@ impl<'de> Parser<'de> {
             // Atoms
             TokenType::Number(n) /* | TokenType::Identifier */ => {
                 // Handle literals and identifiers
-                self.bytecode_chunk.emit_constant(Value::Number(n), lhs.line)?;
+                self.vm.chunk.emit_constant(Value::Number(n), lhs.line)?;
+            }
+            TokenType::String => {
+                self.vm.emit_string(lhs.origin, lhs.line)?;
             }
             TokenType::True => {
-                self.bytecode_chunk.emit_op(Opcode::True, lhs.line);
+                self.vm.chunk.emit_op(Opcode::True, lhs.line);
             }
             TokenType::False => {
-                self.bytecode_chunk.emit_op(Opcode::False, lhs.line);
+                self.vm.chunk.emit_op(Opcode::False, lhs.line);
             }
             TokenType::Nil => {
-                self.bytecode_chunk.emit_op(Opcode::Nil, lhs.line);
+                self.vm.chunk.emit_op(Opcode::Nil, lhs.line);
             }
 
             // Groups
@@ -58,13 +61,13 @@ impl<'de> Parser<'de> {
                 let ((), r_bp) = prefix_binding_power(Op::Minus);
                 self.expr_within(r_bp).wrap_err("after unary minus")?;
                 // Emit bytecode for unary minus
-                self.bytecode_chunk.emit_op(Opcode::Negate, lhs.line);
+                self.vm.chunk.emit_op(Opcode::Negate, lhs.line);
             }
             TokenType::Bang => {
                 let ((), r_bp) = prefix_binding_power(Op::Bang);
                 self.expr_within(r_bp).wrap_err("after unary bang")?;
                 // Emit bytecode for unary bang
-                self.bytecode_chunk.emit_op(Opcode::Not, lhs.line);
+                self.vm.chunk.emit_op(Opcode::Not, lhs.line);
             }
 
             token => {
@@ -192,24 +195,24 @@ impl<'de> Parser<'de> {
                     .wrap_err_with(|| format!("on the right-hand side of {op}"))?;
 
                 match op {
-                    Op::Plus => self.bytecode_chunk.emit_op(Opcode::Add, lhs.line),
-                    Op::Minus => self.bytecode_chunk.emit_op(Opcode::Subtract, lhs.line),
-                    Op::Star => self.bytecode_chunk.emit_op(Opcode::Multiply, lhs.line),
-                    Op::Slash => self.bytecode_chunk.emit_op(Opcode::Divide, lhs.line),
-                    Op::EqualEqual => self.bytecode_chunk.emit_op(Opcode::Equal, lhs.line),
+                    Op::Plus => self.vm.chunk.emit_op(Opcode::Add, lhs.line),
+                    Op::Minus => self.vm.chunk.emit_op(Opcode::Subtract, lhs.line),
+                    Op::Star => self.vm.chunk.emit_op(Opcode::Multiply, lhs.line),
+                    Op::Slash => self.vm.chunk.emit_op(Opcode::Divide, lhs.line),
+                    Op::EqualEqual => self.vm.chunk.emit_op(Opcode::Equal, lhs.line),
                     Op::BangEqual => {
-                        self.bytecode_chunk.emit_op(Opcode::Equal, lhs.line);
-                        self.bytecode_chunk.emit_op(Opcode::Not, lhs.line);
+                        self.vm.chunk.emit_op(Opcode::Equal, lhs.line);
+                        self.vm.chunk.emit_op(Opcode::Not, lhs.line);
                     }
-                    Op::Less => self.bytecode_chunk.emit_op(Opcode::Less, lhs.line),
+                    Op::Less => self.vm.chunk.emit_op(Opcode::Less, lhs.line),
                     Op::LessEqual => {
-                        self.bytecode_chunk.emit_op(Opcode::Greater, lhs.line);
-                        self.bytecode_chunk.emit_op(Opcode::Not, lhs.line);
+                        self.vm.chunk.emit_op(Opcode::Greater, lhs.line);
+                        self.vm.chunk.emit_op(Opcode::Not, lhs.line);
                     }
-                    Op::Greater => self.bytecode_chunk.emit_op(Opcode::Greater, lhs.line),
+                    Op::Greater => self.vm.chunk.emit_op(Opcode::Greater, lhs.line),
                     Op::GreaterEqual => {
-                        self.bytecode_chunk.emit_op(Opcode::Less, lhs.line);
-                        self.bytecode_chunk.emit_op(Opcode::Not, lhs.line);
+                        self.vm.chunk.emit_op(Opcode::Less, lhs.line);
+                        self.vm.chunk.emit_op(Opcode::Not, lhs.line);
                     }
                     _ => {}
                 }
