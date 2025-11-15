@@ -180,7 +180,7 @@ impl<'de> Lexer<'de> {
             } else if c == '\n' {
                 self.line += 1;
             }
-            self.current += 1;
+            self.current += c.len_utf8();
         }
         // Unterminated string
         self.rest = chars.as_str();
