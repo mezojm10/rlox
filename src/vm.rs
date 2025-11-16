@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+use std::fmt;
+use std::ptr::NonNull;
+
 pub enum Opcode {
     Return = 0,
     Constant = 1,
@@ -50,6 +54,7 @@ pub struct VM {
     ip: usize,
     stack: [Value; 256],
     sp: u8,
+    strings: HashSet<String>,
     pub objects: Option<NonNull<Object>>,
 }
 
@@ -61,6 +66,7 @@ impl VM {
             stack: [Value::Nil; 256],
             sp: 0,
             objects: None,
+            strings: HashSet::new(),
         }
     }
 
@@ -81,10 +87,22 @@ impl VM {
         self.stack[self.sp as usize - 1]
     }
 
-    pub fn allocate_string(&mut self, string: String) -> NonNull<Object> {
+    // Allocate a string object
+    // This functions uses string interning, meaning that identical strings share the same memory
+    pub fn allocate_string(&mut self, string: &str) -> NonNull<Object> {
+        // Check if the string is already interned
+        let string = match self.strings.get(string) {
+            Some(s) => s,
+            None => {
+                // If not, intern it and get a reference
+                self.strings.insert(string.to_string());
+                self.strings.get(string).unwrap()
+            }
+        };
+
         // Create the object and box it
         let boxed = Box::new(Object {
-            kind: ObjectKind::String(string),
+            kind: ObjectKind::String(string.into()),
             next: self.objects,
         });
 
@@ -98,7 +116,7 @@ impl VM {
     }
 
     pub fn emit_string(&mut self, string: &str, line: usize) -> miette::Result<()> {
-        let string_object = self.allocate_string(string.to_string());
+        let string_object = self.allocate_string(string);
         self.chunk.emit_constant(Value::Object(string_object), line)
     }
 
@@ -329,7 +347,11 @@ impl VM {
         b: NonNull<Object>,
     ) -> miette::Result<NonNull<Object>> {
         let (mut a_str, b_str) = match (&unsafe { a.as_ref() }.kind, &unsafe { b.as_ref() }.kind) {
-            (ObjectKind::String(s), ObjectKind::String(b)) => (s.clone(), b),
+            (ObjectKind::String(s1), ObjectKind::String(s2)) => {
+                let s1 = unsafe { s1.as_ref().clone() };
+                let s2 = unsafe { s2.as_ref() };
+                (s1, s2)
+            }
             (x, y) => {
                 return Err(miette::miette!(
                     "Both operands of + must be strings or numbers, got {} and {}",
@@ -339,7 +361,7 @@ impl VM {
             }
         };
         a_str.push_str(b_str);
-        Ok(self.allocate_string(a_str))
+        Ok(self.allocate_string(&a_str))
     }
 }
 
@@ -378,7 +400,7 @@ pub struct Object {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ObjectKind {
-    String(String),
+    String(NonNull<String>),
 }
 
 impl Value {
@@ -544,7 +566,6 @@ impl Chunk {
     }
 }
 
-use std::{fmt, ptr::NonNull};
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -559,7 +580,7 @@ impl fmt::Display for Value {
 impl fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
-            ObjectKind::String(s) => write!(f, "\"{s}\""),
+            ObjectKind::String(s) => write!(f, "\"{}\"", unsafe { s.as_ref() }),
         }
     }
 }
