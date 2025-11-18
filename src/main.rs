@@ -43,17 +43,9 @@ fn repl() -> Result<()> {
 }
 
 fn compile(content: &str) -> Result<()> {
-    let mut parser = rlox::Parser::new(content);
-    parser.expr()?;
-    parser.vm.chunk.emit_return(0);
-    match parser.vm.interpret() {
-        Ok(_) => {
-            parser.vm.free_all_objects();
-            Ok(())
-        }
-        e @ Err(_) => {
-            parser.vm.free_all_objects();
-            e
-        }
-    }
+    // Parser will return a VM instance
+    let mut vm = rlox::Parser::new(content).parse()?;
+    vm.chunk.emit_return(0);
+    // Interpret the bytecode
+    vm.interpret()
 }

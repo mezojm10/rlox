@@ -18,6 +18,123 @@ impl<'de> Parser<'de> {
         }
     }
 
+    pub fn parse(mut self) -> Result<vm::VM, miette::Error> {
+        while self.lexer.peek().is_some() {
+            self.stmt_within(0).wrap_err("in top-level statement")?;
+        }
+        Ok(self.vm)
+    }
+
+    fn stmt_within(&mut self, _min_bp: u8) -> Result<(), miette::Error> {
+        let lhs = match self.lexer.next() {
+            Some(Ok(token)) => token,
+            Some(Err(e)) => return Err(e).wrap_err("on left-hand side"),
+            None => return Ok(()),
+        };
+
+        match lhs.kind {
+            TokenType::Print => {
+                self.expr().wrap_err("in print statement")?;
+                self.lexer
+                    .expect(TokenType::Semicolon, "Unexpected end of print statement")
+                    .wrap_err("after print statement")?;
+                self.vm.chunk.emit_op(Opcode::Print, lhs.line);
+                return Ok(());
+            }
+
+            TokenType::Var => {
+                let name_token = self
+                    .lexer
+                    .expect(TokenType::Identifier, "Expected variable name after 'var'")
+                    .wrap_err("after 'var'")?;
+
+                let var_name = name_token.origin;
+
+                // Check for initializer
+                if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref().map_or(false, |tok| tok.kind == TokenType::Equal)
+                }) {
+                    self.lexer.next();
+                    self.expr().wrap_err("in variable initializer")?;
+                } else {
+                    // Default initialize to nil
+                    self.vm.chunk.emit_op(Opcode::Nil, lhs.line);
+                }
+
+                self.lexer
+                    .expect(
+                        TokenType::Semicolon,
+                        "Unexpected end of variable declaration",
+                    )
+                    .wrap_err("after variable declaration")?;
+
+                self.vm.emit_define_global(var_name, lhs.line)?;
+            }
+
+            // Set variable
+            TokenType::Identifier => {
+                // We are setting a value if there's an equal token after the ident
+                if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref().map_or(false, |tok| tok.kind == TokenType::Equal)
+                }) {
+                    // Skip assignment token
+                    self.lexer.next();
+
+                    // Parse expression
+                    self.expr().wrap_err("in variable assignment")?;
+
+                    // Consume semicolon
+                    self.lexer
+                        .expect(
+                            TokenType::Semicolon,
+                            "Unexpected end of variable assignment",
+                        )
+                        .wrap_err("after variable assignment")?;
+
+                    // Emit set global
+                    self.vm.emit_set_global(lhs.origin, lhs.line)?;
+                } else {
+                    match self.lexer.next() {
+                        Some(Ok(tok)) => {
+                            return Err(miette::miette! {
+                                labels = vec![
+                                    LabeledSpan::at(tok.offset..tok.origin.len(),"here"),
+                                ],
+                                help = format!("Unexpected {tok} after identifier {lhs}"),
+                                "Expected a statement"
+                            }
+                            .with_source_code(self.source.to_string()))
+                        }
+                        None => {
+                            return Err(miette::miette! {
+                                labels = vec![
+                                    LabeledSpan::at(lhs.offset..lhs.origin.len(),"here"),
+                                ],
+                                help = format!("Unexpected end of input after identifier {lhs}"),
+                                "Expected a statement"
+                            }
+                            .with_source_code(self.source.to_string()));
+                        }
+                        Some(Err(e)) => return Err(e).wrap_err("after identifier"),
+                    };
+                }
+            }
+
+            _ => {
+                return Err(miette::miette! {
+                    labels = vec![
+                        LabeledSpan::at(lhs.offset..lhs.origin.len(),"here"),
+                    ],
+                    help = format!("Unexpected {lhs}"),
+                    "Expected a statement"
+                }
+                .with_source_code(self.source.to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn expr(&mut self) -> Result<(), miette::Error> {
         self.expr_within(0)
     }
@@ -31,9 +148,11 @@ impl<'de> Parser<'de> {
 
         match lhs.kind {
             // Atoms
-            TokenType::Number(n) /* | TokenType::Identifier */ => {
-                // Handle literals and identifiers
+            TokenType::Number(n) => {
                 self.vm.chunk.emit_constant(Value::Number(n), lhs.line)?;
+            }
+            TokenType::Identifier => {
+                self.vm.emit_get_global(lhs.origin, lhs.line)?;
             }
             TokenType::String => {
                 self.vm.emit_string(lhs.origin, lhs.line)?;
@@ -50,9 +169,13 @@ impl<'de> Parser<'de> {
 
             // Groups
             TokenType::LeftParen => {
-                self.expr_within(0).wrap_err("inside bracketed expression")?;
+                self.expr_within(0)
+                    .wrap_err("inside bracketed expression")?;
                 self.lexer
-                    .expect(TokenType::RightParen, "Unexpected end of bracketed expression")
+                    .expect(
+                        TokenType::RightParen,
+                        "Unexpected end of bracketed expression",
+                    )
                     .wrap_err("after bracketed expression")?;
             }
 
@@ -70,12 +193,12 @@ impl<'de> Parser<'de> {
                 self.vm.chunk.emit_op(Opcode::Not, lhs.line);
             }
 
-            token => {
+            _ => {
                 return Err(miette::miette! {
                     labels = vec![
                         LabeledSpan::at(lhs.offset..lhs.origin.len(),"here"),
                     ],
-                    help = format!("Unexpected {token:?}"),
+                    help = format!("Unexpected {lhs}"),
                     "Expected an expression"
                 }
                 .with_source_code(self.source.to_string()));
@@ -167,7 +290,7 @@ impl<'de> Parser<'de> {
                         labels = vec![
                             LabeledSpan::at(token.offset..token.origin.len(), "here"),
                         ],
-                        help = format!("Unexpected {token:?}"),
+                        help = format!("Unexpected {token}"),
                         "Expected an infix or postfix operator"
                     }
                     .with_source_code(self.source.to_string()))

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ptr::NonNull;
 
@@ -18,6 +18,14 @@ pub enum Opcode {
     Equal = 12,
     Greater = 13,
     ConstantU16 = 14,
+    Print = 15,
+    Pop = 16,
+    DefineGlobal = 17,
+    DefineGlobalU16 = 18,
+    GetGlobal = 19,
+    GetGlobalU16 = 20,
+    SetGlobal = 21,
+    SetGlobalU16 = 22,
 }
 
 impl Opcode {
@@ -38,6 +46,14 @@ impl Opcode {
             12 => Some(Self::Equal),
             13 => Some(Self::Greater),
             14 => Some(Self::ConstantU16),
+            15 => Some(Self::Print),
+            16 => Some(Self::Pop),
+            17 => Some(Self::DefineGlobal),
+            18 => Some(Self::DefineGlobalU16),
+            19 => Some(Self::GetGlobal),
+            20 => Some(Self::GetGlobalU16),
+            21 => Some(Self::SetGlobal),
+            22 => Some(Self::SetGlobalU16),
             _ => None,
         }
     }
@@ -55,6 +71,7 @@ pub struct VM {
     stack: [Value; 256],
     sp: u8,
     strings: HashSet<Box<str>>,
+    globals: HashMap<String, Value>,
     pub objects: Option<NonNull<Object>>,
 }
 
@@ -67,6 +84,7 @@ impl VM {
             sp: 0,
             objects: None,
             strings: HashSet::new(),
+            globals: HashMap::new(),
         }
     }
 
@@ -120,6 +138,36 @@ impl VM {
         self.chunk.emit_constant(Value::Object(string_object), line)
     }
 
+    pub fn emit_define_global(&mut self, var_name: &str, line: usize) -> miette::Result<()> {
+        let string_object = Value::Object(self.allocate_string(var_name));
+        self.chunk.emit_two_or_three_bytes(
+            string_object,
+            line,
+            Opcode::DefineGlobal,
+            Opcode::DefineGlobalU16,
+        )
+    }
+
+    pub fn emit_get_global(&mut self, var_name: &str, line: usize) -> miette::Result<()> {
+        let string_object = Value::Object(self.allocate_string(var_name));
+        self.chunk.emit_two_or_three_bytes(
+            string_object,
+            line,
+            Opcode::GetGlobal,
+            Opcode::GetGlobalU16,
+        )
+    }
+
+    pub fn emit_set_global(&mut self, var_name: &str, line: usize) -> miette::Result<()> {
+        let string_object = Value::Object(self.allocate_string(var_name));
+        self.chunk.emit_two_or_three_bytes(
+            string_object,
+            line,
+            Opcode::SetGlobal,
+            Opcode::SetGlobalU16,
+        )
+    }
+
     pub fn interpret(&mut self) -> miette::Result<()> {
         self.ip = 0;
         self.run()
@@ -134,9 +182,14 @@ impl VM {
 
             match Opcode::from_u8(instruction) {
                 Some(Opcode::Return) => {
+                    return Ok(());
+                }
+                Some(Opcode::Pop) => {
+                    self.pop();
+                }
+                Some(Opcode::Print) => {
                     let value = self.pop();
                     println!("{value}");
-                    return Ok(());
                 }
                 Some(Opcode::Constant) => {
                     let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
@@ -149,6 +202,45 @@ impl VM {
                     let constant_index = (high_byte << 8) | low_byte;
                     let value = self.chunk.constants[constant_index as usize];
                     self.push(value);
+                    self.ip += 2;
+                }
+                Some(Opcode::DefineGlobal) => {
+                    let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
+                    self.define_global(value)?;
+                    self.ip += 1;
+                }
+                Some(Opcode::DefineGlobalU16) => {
+                    let high_byte = self.chunk.codes[self.ip] as u16;
+                    let low_byte = self.chunk.codes[self.ip + 1] as u16;
+                    let constant_index = (high_byte << 8) | low_byte;
+                    let value = self.chunk.constants[constant_index as usize];
+                    self.define_global(value)?;
+                    self.ip += 2;
+                }
+                Some(Opcode::GetGlobal) => {
+                    let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
+                    self.get_global(value)?;
+                    self.ip += 1;
+                }
+                Some(Opcode::GetGlobalU16) => {
+                    let high_byte = self.chunk.codes[self.ip] as u16;
+                    let low_byte = self.chunk.codes[self.ip + 1] as u16;
+                    let constant_index = (high_byte << 8) | low_byte;
+                    let value = self.chunk.constants[constant_index as usize];
+                    self.get_global(value)?;
+                    self.ip += 2;
+                }
+                Some(Opcode::SetGlobal) => {
+                    let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
+                    self.set_global(value)?;
+                    self.ip += 1;
+                }
+                Some(Opcode::SetGlobalU16) => {
+                    let high_byte = self.chunk.codes[self.ip] as u16;
+                    let low_byte = self.chunk.codes[self.ip + 1] as u16;
+                    let constant_index = (high_byte << 8) | low_byte;
+                    let value = self.chunk.constants[constant_index as usize];
+                    self.set_global(value)?;
                     self.ip += 2;
                 }
                 Some(Opcode::True) => {
@@ -323,22 +415,79 @@ impl VM {
         }
     }
 
-    pub fn free_all_objects(&mut self) {
-        let mut current = self.objects;
-
-        while let Some(ptr) = current {
-            // Read the next pointer before dropping the current object
-            let boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
-            let next = boxed.next;
-
-            // Explicitly drop the boxed object
-            drop(boxed);
-
-            // Move to the next object
-            current = next;
+    fn define_global(&mut self, value: Value) -> miette::Result<()> {
+        let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
+        // Make sure value is string object
+        if let Value::Object(obj) = value {
+            if let ObjectKind::String(s) = unsafe { &obj.as_ref().kind } {
+                let key = unsafe { s.as_ref().to_string() };
+                self.globals.insert(key, self.peek());
+                self.pop();
+                return Ok(());
+            }
         }
 
-        self.objects = None;
+        err(
+            "Got an OP_DEFINE_GLOBAL without a string identifier",
+            self.chunk.lines[self.ip - 1],
+        )
+    }
+
+    fn get_global(&mut self, value: Value) -> miette::Result<()> {
+        let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
+        // Make sure value is string object
+        if let Value::Object(obj) = value {
+            if let ObjectKind::String(s) = unsafe { &obj.as_ref().kind } {
+                let key = unsafe { s.as_ref() };
+                let val = match self.globals.get(key) {
+                    Some(v) => *v,
+                    None => {
+                        return err(
+                            &format!("Undefined variable: {key}"),
+                            self.chunk.lines[self.ip - 1],
+                        )
+                    }
+                };
+                self.push(val);
+                return Ok(());
+            }
+        }
+
+        err(
+            "Got an OP_GET_GLOBAL without a string identifier",
+            self.chunk.lines[self.ip - 1],
+        )
+    }
+
+    fn set_global(&mut self, value: Value) -> miette::Result<()> {
+        let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
+        // Make sure value is string object
+        if let Value::Object(obj) = value {
+            if let ObjectKind::String(s) = unsafe { &obj.as_ref().kind } {
+                let key = unsafe { s.as_ref() };
+                // Set the global
+                self.globals
+                    .insert(key.to_string(), self.peek())
+                    // If the global wasn't already set, return an undefined var error
+                    .map_or_else(
+                        || {
+                            err(
+                                &format!("Undefined variable: {key}"),
+                                self.chunk.lines[self.ip - 1],
+                            )
+                        },
+                        |_old_val| Ok(()),
+                    )?;
+                // Pop the new value from the stack
+                self.pop();
+                return Ok(());
+            }
+        }
+
+        err(
+            "Got an OP_SET_GLOBAL without a string identifier",
+            self.chunk.lines[self.ip - 1],
+        )
     }
 
     fn concatenate_strings(
@@ -362,6 +511,27 @@ impl VM {
         };
         a_str.push_str(b_str);
         Ok(self.allocate_string(&a_str))
+    }
+}
+
+// Cleanup data allocated by VM
+impl Drop for VM {
+    fn drop(&mut self) {
+        let mut current = self.objects;
+
+        while let Some(ptr) = current {
+            // Read the next pointer before dropping the current object
+            let boxed = unsafe { Box::from_raw(ptr.as_ptr()) };
+            let next = boxed.next;
+
+            // Explicitly drop the boxed object
+            drop(boxed);
+
+            // Move to the next object
+            current = next;
+        }
+
+        self.objects = None;
     }
 }
 
@@ -432,7 +602,7 @@ impl Chunk {
     }
 
     pub fn emit_op(&mut self, code: Opcode, line: usize) {
-        self.codes.push(code.into());
+        self.codes.push(u8::from(code));
         self.lines.push(line);
     }
 
@@ -442,23 +612,32 @@ impl Chunk {
     }
 
     pub fn emit_constant(&mut self, value: Value, line: usize) -> miette::Result<()> {
+        self.emit_two_or_three_bytes(value, line, Opcode::Constant, Opcode::ConstantU16)
+    }
+
+    fn emit_two_or_three_bytes(
+        &mut self,
+        value: Value,
+        line: usize,
+        opcode: Opcode,
+        opcode_u16: Opcode,
+    ) -> miette::Result<()> {
         let constant_index = self.add_constant(value);
         if constant_index > u8::MAX as usize {
             if constant_index > u16::MAX as usize {
                 return Err(miette::miette!("Constant index overflow."));
             }
-            // Use ConstantU16 opcode
-            self.emit_op(Opcode::ConstantU16, line);
+            // Use u16 opcode
+            self.emit_op(opcode_u16, line);
             let high_byte = ((constant_index as u16) >> 8) as u8;
             let low_byte = (constant_index as u16 & 0xFF) as u8;
             self.codes.push(high_byte);
             self.codes.push(low_byte);
-            self.lines.push(line);
-            return Ok(());
+        } else {
+            // Use u8 opcode
+            self.emit_op(opcode, line);
+            self.codes.push(constant_index as u8);
         }
-        // Use Constant opcode
-        self.emit_op(Opcode::Constant, line);
-        self.codes.push(constant_index as u8);
         self.lines.push(line);
         Ok(())
     }
@@ -506,8 +685,75 @@ impl Chunk {
                 );
                 3
             }
+            Some(Opcode::DefineGlobal) => {
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_DEFINE_GLOBAL",
+                    &self.codes[offset + 1],
+                    &self.constants[self.codes[offset + 1] as usize]
+                );
+                2
+            }
+            Some(Opcode::DefineGlobalU16) => {
+                let high_byte = self.codes[offset + 1] as u16;
+                let low_byte = self.codes[offset + 2] as u16;
+                let constant_index = (high_byte << 8) | low_byte;
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_DEFINE_GLOBAL_U16",
+                    constant_index,
+                    &self.constants[constant_index as usize]
+                );
+                3
+            }
+            Some(Opcode::GetGlobal) => {
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_GET_GLOBAL",
+                    &self.codes[offset + 1],
+                    &self.constants[self.codes[offset + 1] as usize]
+                );
+                2
+            }
+            Some(Opcode::GetGlobalU16) => {
+                let high_byte = self.codes[offset + 1] as u16;
+                let low_byte = self.codes[offset + 2] as u16;
+                let constant_index = (high_byte << 8) | low_byte;
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_GET_GLOBAL_U16", constant_index, &self.constants[constant_index as usize]
+                );
+                3
+            }
+            Some(Opcode::SetGlobal) => {
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_SET_GLOBAL",
+                    &self.codes[offset + 1],
+                    &self.constants[self.codes[offset + 1] as usize]
+                );
+                2
+            }
+            Some(Opcode::SetGlobalU16) => {
+                let high_byte = self.codes[offset + 1] as u16;
+                let low_byte = self.codes[offset + 2] as u16;
+                let constant_index = (high_byte << 8) | low_byte;
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_SET_GLOBAL_U16", constant_index, &self.constants[constant_index as usize]
+                );
+                3
+            }
+            Some(Opcode::Print) => {
+                println!("{:16}", "OP_PRINT");
+                1
+            }
             Some(Opcode::Return) => {
                 println!("{:16}", "OP_RETURN");
+                1
+            }
+            Some(Opcode::Pop) => {
+                println!("{:16}", "OP_POP");
                 1
             }
             Some(Opcode::Negate) => {

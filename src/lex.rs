@@ -68,50 +68,7 @@ pub enum TokenType {
 impl<'de> Display for Token<'de> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let origin = self.origin;
-        write!(
-            f,
-            "{}",
-            match self.kind {
-                TokenType::Identifier => format!("IDENTIFIER {origin}"),
-                TokenType::String => format!("STRING \"{origin}\""),
-                TokenType::Number(n) => format!("NUMBER {n}"),
-                TokenType::LeftParen => format!("LEFT_PAREN {origin}"),
-                TokenType::RightParen => format!("RIGHT_PAREN {origin}"),
-                TokenType::LeftBrace => format!("LEFT_BRACKET {origin}"),
-                TokenType::RightBrace => format!("RIGHT_BRACKET {origin}"),
-                TokenType::Comma => format!("COMMA {origin}"),
-                TokenType::Dot => format!("DOT {origin}"),
-                TokenType::Minus => format!("MINUS {origin}"),
-                TokenType::Plus => format!("PLUS {origin}"),
-                TokenType::Semicolon => format!("SEMICOLON {origin}"),
-                TokenType::Slash => format!("SLASH {origin}"),
-                TokenType::Star => format!("STAR {origin}"),
-                TokenType::Bang => format!("BANG {origin}"),
-                TokenType::BangEqual => format!("BANG_EQUAL {origin}"),
-                TokenType::Equal => format!("EQUAL {origin}"),
-                TokenType::EqualEqual => format!("EQUAL_EQUAL {origin}"),
-                TokenType::Greater => format!("GREATER {origin}"),
-                TokenType::GreaterEqual => format!("GREATER_EQUAL {origin}"),
-                TokenType::Less => format!("LESS {origin}"),
-                TokenType::LessEqual => format!("LESS_EQUAL {origin}"),
-                TokenType::And => format!("AND {origin}"),
-                TokenType::Class => format!("CLASS {origin}"),
-                TokenType::Else => format!("ELSE {origin}"),
-                TokenType::False => format!("FALSE {origin}"),
-                TokenType::For => format!("FOR {origin}"),
-                TokenType::Fun => format!("FUN {origin}"),
-                TokenType::If => format!("IF {origin}"),
-                TokenType::Nil => format!("NIL {origin}"),
-                TokenType::Or => format!("OR {origin}"),
-                TokenType::Print => format!("PRINT {origin}"),
-                TokenType::Return => format!("RETURN {origin}"),
-                TokenType::Super => format!("SUPER {origin}"),
-                TokenType::This => format!("THIS {origin}"),
-                TokenType::True => format!("TRUE {origin}"),
-                TokenType::Var => format!("VAR {origin}"),
-                TokenType::While => format!("WHILE {origin}"),
-            }
-        )
+        write!(f, "{origin}")
     }
 }
 
@@ -282,7 +239,7 @@ impl<'de> Lexer<'de> {
                 labels = vec![
                     LabeledSpan::at(token.offset..token.offset + token.origin.len(), "here")
                 ],
-                help = format!("Expected {token:?}"),
+                help = format!("Expected {token}"),
                 "{unexpected}"
             }
             .with_source_code(self.source.to_string())),
