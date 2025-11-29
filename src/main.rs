@@ -15,7 +15,8 @@ fn main() -> Result<()> {
         let content = std::fs::read_to_string(&path)
             .into_diagnostic()
             .wrap_err_with(|| format!("reading '{}' failed", path.display()))?;
-        compile(&content)?;
+        let mut vm = rlox::VM::new();
+        compile(&mut vm, &content)?;
         Ok(())
     } else {
         // Run Repl
@@ -25,6 +26,7 @@ fn main() -> Result<()> {
 
 fn repl() -> Result<()> {
     let mut buffer = String::new();
+    let mut vm = rlox::VM::new();
     loop {
         print!("> ");
         std::io::stdout().flush().into_diagnostic()?;
@@ -34,7 +36,7 @@ fn repl() -> Result<()> {
             break;
         }
 
-        compile(&buffer)?;
+        compile(&mut vm, &buffer)?;
 
         buffer.clear();
     }
@@ -42,9 +44,8 @@ fn repl() -> Result<()> {
     Ok(())
 }
 
-fn compile(content: &str) -> Result<()> {
-    // Parser will return a VM instance
-    let mut vm = rlox::Parser::new(content).parse()?;
+fn compile(vm: &mut rlox::VM, content: &str) -> Result<()> {
+    rlox::Parser::new(content).parse(vm)?;
     vm.chunk.emit_return(0);
     // Interpret the bytecode
     vm.interpret()

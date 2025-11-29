@@ -6,7 +6,6 @@ use crate::vm::{self, Opcode, Value};
 pub struct Parser<'de> {
     source: &'de str,
     lexer: Lexer<'de>,
-    pub vm: vm::VM,
 }
 
 impl<'de> Parser<'de> {
@@ -14,18 +13,17 @@ impl<'de> Parser<'de> {
         Parser {
             source,
             lexer: Lexer::new(source),
-            vm: vm::VM::new(),
         }
     }
 
-    pub fn parse(mut self) -> Result<vm::VM, miette::Error> {
+    pub fn parse(mut self, vm: &mut vm::VM) -> Result<(), miette::Error> {
         while self.lexer.peek().is_some() {
-            self.stmt_within(0).wrap_err("in top-level statement")?;
+            self.stmt_within(vm, 0).wrap_err("in top-level statement")?;
         }
-        Ok(self.vm)
+        Ok(())
     }
 
-    fn stmt_within(&mut self, _min_bp: u8) -> Result<(), miette::Error> {
+    fn stmt_within(&mut self, vm: &mut vm::VM, _min_bp: u8) -> Result<(), miette::Error> {
         let lhs = match self.lexer.next() {
             Some(Ok(token)) => token,
             Some(Err(e)) => return Err(e).wrap_err("on left-hand side"),
@@ -34,11 +32,11 @@ impl<'de> Parser<'de> {
 
         match lhs.kind {
             TokenType::Print => {
-                self.expr().wrap_err("in print statement")?;
+                self.expr(vm).wrap_err("in print statement")?;
                 self.lexer
                     .expect(TokenType::Semicolon, "Unexpected end of print statement")
                     .wrap_err("after print statement")?;
-                self.vm.chunk.emit_op(Opcode::Print, lhs.line);
+                vm.chunk.emit_op(Opcode::Print, lhs.line);
                 return Ok(());
             }
 
@@ -55,10 +53,10 @@ impl<'de> Parser<'de> {
                     t.as_ref().map_or(false, |tok| tok.kind == TokenType::Equal)
                 }) {
                     self.lexer.next();
-                    self.expr().wrap_err("in variable initializer")?;
+                    self.expr(vm).wrap_err("in variable initializer")?;
                 } else {
                     // Default initialize to nil
-                    self.vm.chunk.emit_op(Opcode::Nil, lhs.line);
+                    vm.chunk.emit_op(Opcode::Nil, lhs.line);
                 }
 
                 self.lexer
@@ -68,7 +66,7 @@ impl<'de> Parser<'de> {
                     )
                     .wrap_err("after variable declaration")?;
 
-                self.vm.emit_define_global(var_name, lhs.line)?;
+                vm.emit_define_global(var_name, lhs.line)?;
             }
 
             // Set variable
@@ -81,7 +79,7 @@ impl<'de> Parser<'de> {
                     self.lexer.next();
 
                     // Parse expression
-                    self.expr().wrap_err("in variable assignment")?;
+                    self.expr(vm).wrap_err("in variable assignment")?;
 
                     // Consume semicolon
                     self.lexer
@@ -92,7 +90,7 @@ impl<'de> Parser<'de> {
                         .wrap_err("after variable assignment")?;
 
                     // Emit set global
-                    self.vm.emit_set_global(lhs.origin, lhs.line)?;
+                    vm.emit_set_global(lhs.origin, lhs.line)?;
                 } else {
                     match self.lexer.next() {
                         Some(Ok(tok)) => {
@@ -135,11 +133,11 @@ impl<'de> Parser<'de> {
         Ok(())
     }
 
-    pub fn expr(&mut self) -> Result<(), miette::Error> {
-        self.expr_within(0)
+    pub fn expr(&mut self, vm: &mut vm::VM) -> Result<(), miette::Error> {
+        self.expr_within(vm, 0)
     }
 
-    fn expr_within(&mut self, min_bp: u8) -> Result<(), miette::Error> {
+    fn expr_within(&mut self, vm: &mut vm::VM, min_bp: u8) -> Result<(), miette::Error> {
         let lhs = match self.lexer.next() {
             Some(Ok(token)) => token,
             Some(Err(e)) => return Err(e).wrap_err("on left-hand side"),
@@ -149,27 +147,27 @@ impl<'de> Parser<'de> {
         match lhs.kind {
             // Atoms
             TokenType::Number(n) => {
-                self.vm.chunk.emit_constant(Value::Number(n), lhs.line)?;
+                vm.chunk.emit_constant(Value::Number(n), lhs.line)?;
             }
             TokenType::Identifier => {
-                self.vm.emit_get_global(lhs.origin, lhs.line)?;
+                vm.emit_get_global(lhs.origin, lhs.line)?;
             }
             TokenType::String => {
-                self.vm.emit_string(lhs.origin, lhs.line)?;
+                vm.emit_string(lhs.origin, lhs.line)?;
             }
             TokenType::True => {
-                self.vm.chunk.emit_op(Opcode::True, lhs.line);
+                vm.chunk.emit_op(Opcode::True, lhs.line);
             }
             TokenType::False => {
-                self.vm.chunk.emit_op(Opcode::False, lhs.line);
+                vm.chunk.emit_op(Opcode::False, lhs.line);
             }
             TokenType::Nil => {
-                self.vm.chunk.emit_op(Opcode::Nil, lhs.line);
+                vm.chunk.emit_op(Opcode::Nil, lhs.line);
             }
 
             // Groups
             TokenType::LeftParen => {
-                self.expr_within(0)
+                self.expr_within(vm, 0)
                     .wrap_err("inside bracketed expression")?;
                 self.lexer
                     .expect(
@@ -182,15 +180,15 @@ impl<'de> Parser<'de> {
             // Unary prefix expressions
             TokenType::Minus => {
                 let ((), r_bp) = prefix_binding_power(Op::Minus);
-                self.expr_within(r_bp).wrap_err("after unary minus")?;
+                self.expr_within(vm, r_bp).wrap_err("after unary minus")?;
                 // Emit bytecode for unary minus
-                self.vm.chunk.emit_op(Opcode::Negate, lhs.line);
+                vm.chunk.emit_op(Opcode::Negate, lhs.line);
             }
             TokenType::Bang => {
                 let ((), r_bp) = prefix_binding_power(Op::Bang);
-                self.expr_within(r_bp).wrap_err("after unary bang")?;
+                self.expr_within(vm, r_bp).wrap_err("after unary bang")?;
                 // Emit bytecode for unary bang
-                self.vm.chunk.emit_op(Opcode::Not, lhs.line);
+                vm.chunk.emit_op(Opcode::Not, lhs.line);
             }
 
             _ => {
@@ -314,28 +312,28 @@ impl<'de> Parser<'de> {
                 }
                 self.lexer.next();
 
-                self.expr_within(r_bp)
+                self.expr_within(vm, r_bp)
                     .wrap_err_with(|| format!("on the right-hand side of {op}"))?;
 
                 match op {
-                    Op::Plus => self.vm.chunk.emit_op(Opcode::Add, lhs.line),
-                    Op::Minus => self.vm.chunk.emit_op(Opcode::Subtract, lhs.line),
-                    Op::Star => self.vm.chunk.emit_op(Opcode::Multiply, lhs.line),
-                    Op::Slash => self.vm.chunk.emit_op(Opcode::Divide, lhs.line),
-                    Op::EqualEqual => self.vm.chunk.emit_op(Opcode::Equal, lhs.line),
+                    Op::Plus => vm.chunk.emit_op(Opcode::Add, lhs.line),
+                    Op::Minus => vm.chunk.emit_op(Opcode::Subtract, lhs.line),
+                    Op::Star => vm.chunk.emit_op(Opcode::Multiply, lhs.line),
+                    Op::Slash => vm.chunk.emit_op(Opcode::Divide, lhs.line),
+                    Op::EqualEqual => vm.chunk.emit_op(Opcode::Equal, lhs.line),
                     Op::BangEqual => {
-                        self.vm.chunk.emit_op(Opcode::Equal, lhs.line);
-                        self.vm.chunk.emit_op(Opcode::Not, lhs.line);
+                        vm.chunk.emit_op(Opcode::Equal, lhs.line);
+                        vm.chunk.emit_op(Opcode::Not, lhs.line);
                     }
-                    Op::Less => self.vm.chunk.emit_op(Opcode::Less, lhs.line),
+                    Op::Less => vm.chunk.emit_op(Opcode::Less, lhs.line),
                     Op::LessEqual => {
-                        self.vm.chunk.emit_op(Opcode::Greater, lhs.line);
-                        self.vm.chunk.emit_op(Opcode::Not, lhs.line);
+                        vm.chunk.emit_op(Opcode::Greater, lhs.line);
+                        vm.chunk.emit_op(Opcode::Not, lhs.line);
                     }
-                    Op::Greater => self.vm.chunk.emit_op(Opcode::Greater, lhs.line),
+                    Op::Greater => vm.chunk.emit_op(Opcode::Greater, lhs.line),
                     Op::GreaterEqual => {
-                        self.vm.chunk.emit_op(Opcode::Less, lhs.line);
-                        self.vm.chunk.emit_op(Opcode::Not, lhs.line);
+                        vm.chunk.emit_op(Opcode::Less, lhs.line);
+                        vm.chunk.emit_op(Opcode::Not, lhs.line);
                     }
                     _ => {}
                 }

@@ -169,11 +169,6 @@ impl VM {
     }
 
     pub fn interpret(&mut self) -> miette::Result<()> {
-        self.ip = 0;
-        self.run()
-    }
-
-    fn run(&mut self) -> miette::Result<()> {
         self.chunk.disassemble("Test Chunk");
         let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
         loop {
@@ -646,6 +641,7 @@ impl Chunk {
         self.emit_op(Opcode::Return, line);
     }
 
+    /// For debugging purposes. Prints the opcodes in the vm
     fn disassemble(&self, name: &str) {
         println!("== {} ==", name);
 
@@ -664,6 +660,8 @@ impl Chunk {
         }
     }
 
+    /// For debugging purposes, prints the operation and its operands
+    /// and returns the byte size of the op.
     fn disassemble_op(&self, offset: usize) -> usize {
         match Opcode::from_u8(self.codes[offset]) {
             Some(Opcode::Constant) => {
