@@ -23,6 +23,34 @@ impl<'de> Parser<'de> {
         Ok(())
     }
 
+    fn parse_block(&mut self, vm: &mut vm::VM) -> Result<(), miette::Error> {
+        loop {
+            let tok = self.lexer.peek();
+            if tok.map_or(false, |tok| tok.is_err()) {
+                return Err(self
+                    .lexer
+                    .next()
+                    .expect("checked Some above")
+                    .expect_err("checked Err above"))
+                .wrap_err("in block statement");
+            }
+            match tok.map(|res| res.as_ref().expect("handled Err above")) {
+                Some(Token {
+                    kind: TokenType::RightBrace,
+                    ..
+                })
+                | None => break,
+                _ => self.stmt_within(vm, 0)?,
+            };
+        }
+
+        self.lexer
+            .expect(TokenType::RightBrace, "expected }")
+            .wrap_err("at the end of the block")?;
+
+        Ok(())
+    }
+
     fn stmt_within(&mut self, vm: &mut vm::VM, _min_bp: u8) -> Result<(), miette::Error> {
         let lhs = match self.lexer.next() {
             Some(Ok(token)) => token,
@@ -34,7 +62,7 @@ impl<'de> Parser<'de> {
             TokenType::Print => {
                 self.expr(vm).wrap_err("in print statement")?;
                 self.lexer
-                    .expect(TokenType::Semicolon, "Unexpected end of print statement")
+                    .expect(TokenType::Semicolon, "expected ;")
                     .wrap_err("after print statement")?;
                 vm.chunk.emit_op(Opcode::Print, lhs.line);
                 return Ok(());
@@ -60,10 +88,7 @@ impl<'de> Parser<'de> {
                 }
 
                 self.lexer
-                    .expect(
-                        TokenType::Semicolon,
-                        "Unexpected end of variable declaration",
-                    )
+                    .expect(TokenType::Semicolon, "expected ;")
                     .wrap_err("after variable declaration")?;
 
                 vm.emit_define_global(var_name, lhs.line)?;
@@ -83,10 +108,7 @@ impl<'de> Parser<'de> {
 
                     // Consume semicolon
                     self.lexer
-                        .expect(
-                            TokenType::Semicolon,
-                            "Unexpected end of variable assignment",
-                        )
+                        .expect(TokenType::Semicolon, "expected ;")
                         .wrap_err("after variable assignment")?;
 
                     // Emit set global
@@ -116,6 +138,11 @@ impl<'de> Parser<'de> {
                         Some(Err(e)) => return Err(e).wrap_err("after identifier"),
                     };
                 }
+            }
+
+            // Block statements
+            TokenType::LeftBrace => {
+                self.parse_block(vm)?;
             }
 
             _ => {
@@ -170,10 +197,7 @@ impl<'de> Parser<'de> {
                 self.expr_within(vm, 0)
                     .wrap_err("inside bracketed expression")?;
                 self.lexer
-                    .expect(
-                        TokenType::RightParen,
-                        "Unexpected end of bracketed expression",
-                    )
+                    .expect(TokenType::RightParen, "expected )")
                     .wrap_err("after bracketed expression")?;
             }
 

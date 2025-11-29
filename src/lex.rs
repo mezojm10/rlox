@@ -239,12 +239,15 @@ impl<'de> Lexer<'de> {
                 labels = vec![
                     LabeledSpan::at(token.offset..token.offset + token.origin.len(), "here")
                 ],
-                help = format!("Expected {token}"),
+                help = format!("unexpected {token}"),
                 "{unexpected}"
             }
             .with_source_code(self.source.to_string())),
             Some(Err(e)) => Err(e),
-            None => Err(miette::miette!("Unexpected EOF")),
+            None => Err(miette::miette! {
+                help = format!("{unexpected}"),
+                "unexpected EOF"
+            }),
         }
     }
 
