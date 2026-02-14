@@ -6,6 +6,72 @@ use crate::vm::{self, Opcode, Value};
 pub struct Parser<'de> {
     source: &'de str,
     lexer: Lexer<'de>,
+    compiler: Compiler<'de>,
+}
+
+pub struct Compiler<'de> {
+    scope_depth: usize,
+    locals: Vec<Local<'de>>,
+}
+
+impl<'de> Compiler<'de> {
+    fn add_local(&mut self, name: Token<'de>, src: &str) -> Result<(), miette::Error> {
+        // Max amount of locals allowed is 256 to use 1 byte as an index
+        // TODO: Make second instruction that uses 2 bytes?
+        if self.locals.len() >= 256 {
+            return Err(miette::miette! {
+                labels = vec![
+                    LabeledSpan::at(name.offset..name.origin.len(), "here"),
+                ],
+                help = "Too many local variables in scope",
+                "Maximum is 256"
+            }
+            .with_source_code(src.to_string()));
+        }
+
+        // Check if redeclaring in the same scope
+        for local in self.locals.iter().rev() {
+            if
+            /*local.depth != -1 && */
+            local.depth < self.scope_depth {
+                // Doesn't matter if declared in a previous scope (shadowing is allowed)
+                break;
+            }
+
+            if name.origin == local.name_token.origin {
+                return Err(miette::miette! {
+                    labels = vec![
+                        LabeledSpan::at(name.offset..name.origin.len(), "here"),
+                    ],
+                    help = "Cannot redeclare variable in the same scope",
+                    "Variable already declared"
+                });
+            }
+        }
+
+        self.locals.push(Local {
+            name_token: name,
+            depth: self.scope_depth,
+        });
+
+        Ok(())
+    }
+
+    fn resolve_local(&self, name: Token<'de>) -> Option<u8> {
+        for (i, local) in self.locals.iter().enumerate().rev() {
+            if dbg!(local.name_token.origin) == name.origin {
+                return Some(i as u8);
+            }
+        }
+
+        None
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct Local<'de> {
+    name_token: Token<'de>,
+    depth: usize,
 }
 
 impl<'de> Parser<'de> {
@@ -13,6 +79,10 @@ impl<'de> Parser<'de> {
         Parser {
             source,
             lexer: Lexer::new(source),
+            compiler: Compiler {
+                scope_depth: 0,
+                locals: Vec::with_capacity(256),
+            },
         }
     }
 
@@ -91,7 +161,13 @@ impl<'de> Parser<'de> {
                     .expect(TokenType::Semicolon, "expected ;")
                     .wrap_err("after variable declaration")?;
 
-                vm.emit_define_global(var_name, lhs.line)?;
+                if self.compiler.scope_depth > 0 {
+                    // Add local variable
+                    self.compiler.add_local(name_token, self.source)?;
+                } else {
+                    // Add global variable
+                    vm.emit_define_global(var_name, lhs.line)?;
+                }
             }
 
             // Set variable
@@ -111,8 +187,13 @@ impl<'de> Parser<'de> {
                         .expect(TokenType::Semicolon, "expected ;")
                         .wrap_err("after variable assignment")?;
 
-                    // Emit set global
-                    vm.emit_set_global(lhs.origin, lhs.line)?;
+                    if let Some(local_idx) = self.compiler.resolve_local(lhs) {
+                        // Emit set local
+                        vm.emit_set_local(local_idx, lhs.line);
+                    } else {
+                        // Emit set global
+                        vm.emit_set_global(lhs.origin, lhs.line)?;
+                    }
                 } else {
                     match self.lexer.next() {
                         Some(Ok(tok)) => {
@@ -142,7 +223,37 @@ impl<'de> Parser<'de> {
 
             // Block statements
             TokenType::LeftBrace => {
+                // Begin new scope
+                self.compiler.scope_depth += 1;
+
                 self.parse_block(vm)?;
+
+                // End scope
+                self.compiler.scope_depth -= 1;
+
+                // Remove locals that belong to the closed scope
+                while self.compiler.locals.len() > 0 {
+                    let local = match self.compiler.locals.last() {
+                        Some(local) => local,
+                        None => {
+                            return Err(miette::miette! {
+                                labels = vec![
+                                    LabeledSpan::at(lhs.offset..lhs.origin.len(), "here"),
+                                ],
+                                help = format!("This is a bug in the interpreter"),
+                                "Something went wrong",
+                            }
+                            .with_source_code(self.source.to_string()))
+                        }
+                    };
+
+                    if local.depth <= self.compiler.scope_depth {
+                        break;
+                    }
+
+                    vm.chunk.emit_op(Opcode::Pop, local.name_token.line);
+                    self.compiler.locals.pop();
+                }
             }
 
             _ => {
@@ -177,7 +288,13 @@ impl<'de> Parser<'de> {
                 vm.chunk.emit_constant(Value::Number(n), lhs.line)?;
             }
             TokenType::Identifier => {
-                vm.emit_get_global(lhs.origin, lhs.line)?;
+                if let Some(local_idx) = dbg!(self.compiler.resolve_local(lhs)) {
+                    // Emit get local
+                    vm.emit_get_local(local_idx, lhs.line);
+                } else {
+                    // Emit get global
+                    vm.emit_get_global(lhs.origin, lhs.line)?;
+                }
             }
             TokenType::String => {
                 vm.emit_string(lhs.origin, lhs.line)?;

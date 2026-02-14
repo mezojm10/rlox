@@ -26,6 +26,8 @@ pub enum Opcode {
     GetGlobalU16 = 20,
     SetGlobal = 21,
     SetGlobalU16 = 22,
+    GetLocal = 23,
+    SetLocal = 24,
 }
 
 impl Opcode {
@@ -54,6 +56,8 @@ impl Opcode {
             20 => Some(Self::GetGlobalU16),
             21 => Some(Self::SetGlobal),
             22 => Some(Self::SetGlobalU16),
+            23 => Some(Self::GetLocal),
+            24 => Some(Self::SetLocal),
             _ => None,
         }
     }
@@ -168,8 +172,20 @@ impl VM {
         )
     }
 
+    pub fn emit_get_local(&mut self, local_idx: u8, line: usize) {
+        self.chunk.emit_op(Opcode::GetLocal, line);
+        self.chunk.codes.push(local_idx);
+        self.chunk.lines.push(line);
+    }
+
+    pub fn emit_set_local(&mut self, local_idx: u8, line: usize) {
+        self.chunk.emit_op(Opcode::SetLocal, line);
+        self.chunk.codes.push(local_idx);
+        self.chunk.lines.push(line);
+    }
+
     pub fn interpret(&mut self) -> miette::Result<()> {
-        self.chunk.disassemble("Test Chunk");
+        self.chunk.disassemble("Test Chunk", &self.stack);
         let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
         loop {
             let instruction = self.chunk.codes[self.ip];
@@ -237,6 +253,18 @@ impl VM {
                     let value = self.chunk.constants[constant_index as usize];
                     self.set_global(value)?;
                     self.ip += 2;
+                }
+                Some(Opcode::GetLocal) => {
+                    let local_idx = self.chunk.codes[self.ip];
+                    let value = self.stack[local_idx as usize];
+                    self.push(value);
+                    self.ip += 1;
+                }
+                Some(Opcode::SetLocal) => {
+                    let local_idx = self.chunk.codes[self.ip];
+                    let new_value = self.pop();
+                    self.stack[local_idx as usize] = new_value;
+                    self.ip += 1;
                 }
                 Some(Opcode::True) => {
                     self.push(Value::Bool(true));
@@ -642,7 +670,7 @@ impl Chunk {
     }
 
     /// For debugging purposes. Prints the opcodes in the vm
-    fn disassemble(&self, name: &str) {
+    fn disassemble(&self, name: &str, stack: &[Value]) {
         println!("== {} ==", name);
 
         let mut offset = 0;
@@ -656,13 +684,13 @@ impl Chunk {
             } else {
                 print!("{:4} ", self.lines[offset]);
             }
-            offset += self.disassemble_op(offset);
+            offset += self.disassemble_op(offset, stack);
         }
     }
 
     /// For debugging purposes, prints the operation and its operands
     /// and returns the byte size of the op.
-    fn disassemble_op(&self, offset: usize) -> usize {
+    fn disassemble_op(&self, offset: usize, stack: &[Value]) -> usize {
         match Opcode::from_u8(self.codes[offset]) {
             Some(Opcode::Constant) => {
                 println!(
@@ -727,8 +755,8 @@ impl Chunk {
                 println!(
                     "{:16} {:4} {}",
                     "OP_SET_GLOBAL",
-                    &self.codes[offset + 1],
-                    &self.constants[self.codes[offset + 1] as usize]
+                    self.codes[offset + 1],
+                    self.constants[self.codes[offset + 1] as usize]
                 );
                 2
             }
@@ -738,9 +766,27 @@ impl Chunk {
                 let constant_index = (high_byte << 8) | low_byte;
                 println!(
                     "{:16} {:4} {}",
-                    "OP_SET_GLOBAL_U16", constant_index, &self.constants[constant_index as usize]
+                    "OP_SET_GLOBAL_U16", constant_index, self.constants[constant_index as usize]
                 );
                 3
+            }
+            Some(Opcode::GetLocal) => {
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_GET_LOCAL",
+                    self.codes[offset + 1],
+                    stack[self.codes[offset + 1] as usize]
+                );
+                2
+            }
+            Some(Opcode::SetLocal) => {
+                println!(
+                    "{:16} {:4} {}",
+                    "OP_SET_LOCAL",
+                    self.codes[offset + 1],
+                    stack[self.codes[offset + 1] as usize]
+                );
+                2
             }
             Some(Opcode::Print) => {
                 println!("{:16}", "OP_PRINT");
