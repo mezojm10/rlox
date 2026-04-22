@@ -256,6 +256,40 @@ impl<'de> Parser<'de> {
                 }
             }
 
+            // If statements
+            TokenType::If => {
+                // Consume '('
+                self.lexer
+                    .expect(TokenType::LeftParen, "expected (")
+                    .wrap_err("after if")?;
+
+                // Parse condition
+                self.expr(vm).wrap_err("in if condition")?;
+
+                // consume ')'
+                self.lexer
+                    .expect(TokenType::RightParen, "expected )")
+                    .wrap_err("after if condition")?;
+
+                let then_jump = vm.chunk.emit_jump(Opcode::JumpIfFalse, lhs.line);
+                vm.chunk.emit_op(Opcode::Pop, lhs.line);
+                self.stmt_within(vm, 0)?;
+
+                let else_jump = vm.chunk.emit_jump(Opcode::Jump, lhs.line);
+
+                vm.chunk.patch_jump(then_jump);
+                vm.chunk.emit_op(Opcode::Pop, lhs.line);
+
+                if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref().map_or(false, |tok| tok.kind == TokenType::Else)
+                }) {
+                    self.lexer.next();
+                    self.stmt_within(vm, 0).wrap_err("in else statement")?;
+                }
+
+                vm.chunk.patch_jump(else_jump);
+            }
+
             _ => {
                 return Err(miette::miette! {
                     labels = vec![

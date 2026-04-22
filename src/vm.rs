@@ -28,6 +28,8 @@ pub enum Opcode {
     SetGlobalU16 = 22,
     GetLocal = 23,
     SetLocal = 24,
+    Jump = 25,
+    JumpIfFalse = 26,
 }
 
 impl Opcode {
@@ -58,6 +60,8 @@ impl Opcode {
             22 => Some(Self::SetGlobalU16),
             23 => Some(Self::GetLocal),
             24 => Some(Self::SetLocal),
+            25 => Some(Self::Jump),
+            26 => Some(Self::JumpIfFalse),
             _ => None,
         }
     }
@@ -208,12 +212,21 @@ impl VM {
                     self.ip += 1;
                 }
                 Some(Opcode::ConstantU16) => {
-                    let high_byte = self.chunk.codes[self.ip] as u16;
-                    let low_byte = self.chunk.codes[self.ip + 1] as u16;
-                    let constant_index = (high_byte << 8) | low_byte;
+                    let constant_index = self.read_u16();
                     let value = self.chunk.constants[constant_index as usize];
                     self.push(value);
-                    self.ip += 2;
+                }
+                Some(Opcode::Jump) => {
+                    let offset = self.read_u16();
+                    self.ip += offset as usize;
+                }
+                Some(Opcode::JumpIfFalse) => {
+                    let offset = self.read_u16();
+                    // Jump if false or nil
+                    // NOTE: Could consider other values 'falsey' if we want
+                    if let Value::Nil | Value::Bool(false) = self.peek() {
+                        self.ip += offset as usize;
+                    }
                 }
                 Some(Opcode::DefineGlobal) => {
                     let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
@@ -438,6 +451,13 @@ impl VM {
         }
     }
 
+    fn read_u16(&mut self) -> u16 {
+        let high_byte = self.chunk.codes[self.ip] as u16;
+        let low_byte = self.chunk.codes[self.ip + 1] as u16;
+        self.ip += 2;
+        (high_byte << 8) | low_byte
+    }
+
     fn define_global(&mut self, value: Value) -> miette::Result<()> {
         let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
         // Make sure value is string object
@@ -656,6 +676,7 @@ impl Chunk {
             let low_byte = (constant_index as u16 & 0xFF) as u8;
             self.codes.push(high_byte);
             self.codes.push(low_byte);
+            self.lines.push(line);
         } else {
             // Use u8 opcode
             self.emit_op(opcode, line);
@@ -667,6 +688,30 @@ impl Chunk {
 
     pub fn emit_return(&mut self, line: usize) {
         self.emit_op(Opcode::Return, line);
+    }
+
+    pub fn emit_jump(&mut self, opcode: Opcode, line: usize) -> usize {
+        self.emit_op(opcode, line);
+        self.codes.push(0xff);
+        self.codes.push(0xff);
+        self.lines.push(line);
+        self.lines.push(line);
+
+        // Return offset of first operand
+        self.codes.len() - 2
+    }
+
+    pub fn patch_jump(&mut self, jump_pos: usize) {
+        // -2 to adjust for the bytecode of the jump offset itself
+        let jump_offset = self.codes.len() - jump_pos - 2;
+        if jump_offset > u16::MAX as usize {
+            // TODO: Use miette to report the location of the error in the source code
+            panic!("Too much code to jump over");
+        }
+
+        let offset_bytes = (jump_offset as u16).to_be_bytes();
+        self.codes[jump_pos] = offset_bytes[0];
+        self.codes[jump_pos + 1] = offset_bytes[1];
     }
 
     /// For debugging purposes. Prints the opcodes in the vm
@@ -708,6 +753,30 @@ impl Chunk {
                 println!(
                     "{:16} {:4} {}",
                     "OP_CONSTANT_U16", constant_index, &self.constants[constant_index as usize]
+                );
+                3
+            }
+            Some(Opcode::Jump) => {
+                let high_byte = self.codes[offset + 1] as u16;
+                let low_byte = self.codes[offset + 2] as u16;
+                let jump = (high_byte << 8) | low_byte;
+                println!(
+                    "{:16} {:4} -> {}",
+                    "OP_JUMP",
+                    offset,
+                    offset + 3 + jump as usize
+                );
+                3
+            }
+            Some(Opcode::JumpIfFalse) => {
+                let high_byte = self.codes[offset + 1] as u16;
+                let low_byte = self.codes[offset + 2] as u16;
+                let jump = (high_byte << 8) | low_byte;
+                println!(
+                    "{:16} {:4} -> {}",
+                    "OP_JUMP_IF_FALSE",
+                    offset,
+                    offset + 3 + jump as usize
                 );
                 3
             }
