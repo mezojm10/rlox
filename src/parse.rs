@@ -487,8 +487,11 @@ impl<'de> Parser<'de> {
                 }
                 self.lexer.next();
 
-                self.expr_within(vm, r_bp)
-                    .wrap_err_with(|| format!("on the right-hand side of {op}"))?;
+                // Short-circuiting operators don't always evaluate the rhs
+                if !matches!(op, Op::And | Op::Or) {
+                    self.expr_within(vm, r_bp)
+                        .wrap_err_with(|| format!("on the right-hand side of {op}"))?;
+                }
 
                 match op {
                     Op::Plus => vm.chunk.emit_op(Opcode::Add, lhs.line),
@@ -509,6 +512,26 @@ impl<'de> Parser<'de> {
                     Op::GreaterEqual => {
                         vm.chunk.emit_op(Opcode::Less, lhs.line);
                         vm.chunk.emit_op(Opcode::Not, lhs.line);
+                    }
+                    Op::And => {
+                        let end_jump = vm.chunk.emit_jump(Opcode::JumpIfFalse, lhs.line);
+
+                        vm.chunk.emit_op(Opcode::Pop, lhs.line);
+                        self.expr_within(vm, r_bp)
+                            .wrap_err("on the right-hand side of and")?;
+
+                        vm.chunk.patch_jump(end_jump);
+                    }
+                    Op::Or => {
+                        let else_jump = vm.chunk.emit_jump(Opcode::JumpIfFalse, lhs.line);
+                        let jump = vm.chunk.emit_jump(Opcode::Jump, lhs.line);
+
+                        vm.chunk.patch_jump(else_jump);
+                        vm.chunk.emit_op(Opcode::Pop, lhs.line);
+                        self.expr_within(vm, r_bp)
+                            .wrap_err("on the right-hand side of or")?;
+
+                        vm.chunk.patch_jump(jump);
                     }
                     _ => {}
                 }
