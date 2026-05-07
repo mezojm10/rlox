@@ -121,6 +121,25 @@ impl<'de> Parser<'de> {
         Ok(())
     }
 
+    fn set_variable(&mut self, vm: &mut vm::VM, token: Token<'de>) -> Result<(), miette::Error> {
+        // Skip assignment token
+        self.lexer
+            .expect(TokenType::Equal, "expected =")
+            .wrap_err("in variable assignment")?;
+
+        // Parse expression
+        self.expr(vm).wrap_err("in variable assignment")?;
+
+        if let Some(local_idx) = self.compiler.resolve_local(token) {
+            // Emit set local
+            vm.emit_set_local(local_idx, token.line);
+        } else {
+            // Emit set global
+            vm.emit_set_global(token.origin, token.line)?;
+        }
+        Ok(())
+    }
+
     fn stmt_within(&mut self, vm: &mut vm::VM, _min_bp: u8) -> Result<(), miette::Error> {
         let lhs = match self.lexer.next() {
             Some(Ok(token)) => token,
@@ -176,24 +195,14 @@ impl<'de> Parser<'de> {
                 if self.lexer.peek().map_or(false, |t| {
                     t.as_ref().map_or(false, |tok| tok.kind == TokenType::Equal)
                 }) {
-                    // Skip assignment token
-                    self.lexer.next();
-
-                    // Parse expression
-                    self.expr(vm).wrap_err("in variable assignment")?;
+                    // Parse the assignment
+                    self.set_variable(vm, lhs)
+                        .wrap_err("in variable assignment")?;
 
                     // Consume semicolon
                     self.lexer
                         .expect(TokenType::Semicolon, "expected ;")
                         .wrap_err("after variable assignment")?;
-
-                    if let Some(local_idx) = self.compiler.resolve_local(lhs) {
-                        // Emit set local
-                        vm.emit_set_local(local_idx, lhs.line);
-                    } else {
-                        // Emit set global
-                        vm.emit_set_global(lhs.origin, lhs.line)?;
-                    }
                 } else {
                     match self.lexer.next() {
                         Some(Ok(tok)) => {
@@ -228,32 +237,7 @@ impl<'de> Parser<'de> {
 
                 self.parse_block(vm)?;
 
-                // End scope
-                self.compiler.scope_depth -= 1;
-
-                // Remove locals that belong to the closed scope
-                while self.compiler.locals.len() > 0 {
-                    let local = match self.compiler.locals.last() {
-                        Some(local) => local,
-                        None => {
-                            return Err(miette::miette! {
-                                labels = vec![
-                                    LabeledSpan::at(lhs.offset..lhs.origin.len(), "here"),
-                                ],
-                                help = format!("This is a bug in the interpreter"),
-                                "Something went wrong",
-                            }
-                            .with_source_code(self.source.to_string()))
-                        }
-                    };
-
-                    if local.depth <= self.compiler.scope_depth {
-                        break;
-                    }
-
-                    vm.chunk.emit_op(Opcode::Pop, local.name_token.line);
-                    self.compiler.locals.pop();
-                }
+                self.end_scope(vm);
             }
 
             // If statements
@@ -316,6 +300,115 @@ impl<'de> Parser<'de> {
                 vm.chunk.emit_op(Opcode::Pop, lhs.line);
             }
 
+            TokenType::For => {
+                // Begin new scope
+                self.compiler.scope_depth += 1;
+
+                // Consume '('
+                self.lexer
+                    .expect(TokenType::LeftParen, "expected (")
+                    .wrap_err("after for")?;
+
+                // Check for initializer
+                if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref()
+                        .map_or(false, |tok| tok.kind == TokenType::Semicolon)
+                }) {
+                    // No initializer, skip over the semicolon
+                    self.lexer.next();
+                } else if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref().map_or(false, |tok| tok.kind == TokenType::Var)
+                }) {
+                    // Var initializer
+                    self.stmt_within(vm, 0).wrap_err("in for initializer")?;
+                } else if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref()
+                        .map_or(false, |token| token.kind == TokenType::Identifier)
+                }) {
+                    // Assignment initializer
+                    let ident_token = self
+                        .lexer
+                        .expect(TokenType::Identifier, "expected identifier")
+                        .wrap_err("in for initializer")?;
+
+                    self.set_variable(vm, ident_token)
+                        .wrap_err("in for initializer")?;
+                    self.lexer
+                        .expect(TokenType::Semicolon, "expected ;")
+                        .wrap_err("after for initializer")?;
+                } else {
+                    // Expression initializer
+                    self.expr(vm).wrap_err("in for initializer")?;
+                    self.lexer
+                        .expect(TokenType::Semicolon, "expected ;")
+                        .wrap_err("after for initializer")?;
+                    // We don't need the result of the expression, so pop it off the stack
+                    vm.chunk.emit_op(Opcode::Pop, lhs.line);
+                }
+
+                // Check for condition
+                let loop_start = vm.chunk.get_cur_addr();
+                let exit_jump = if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref()
+                        .map_or(false, |tok| tok.kind == TokenType::Semicolon)
+                }) {
+                    // No condition, skip over the semicolon
+                    self.lexer.next();
+                    None
+                } else {
+                    // Parse condition
+                    self.expr(vm).wrap_err("in for condition")?;
+                    self.lexer
+                        .expect(TokenType::Semicolon, "expected ;")
+                        .wrap_err("after for condition")?;
+
+                    // Emit jump if false
+                    let exit_jump = vm.chunk.emit_jump(Opcode::JumpIfFalse, lhs.line);
+                    vm.chunk.emit_op(Opcode::Pop, lhs.line);
+                    Some(exit_jump)
+                };
+
+                let increment_start = if self.lexer.peek().map_or(false, |t| {
+                    t.as_ref()
+                        .map_or(false, |tok| tok.kind == TokenType::RightParen)
+                }) {
+                    // No increment, skip over the right paren
+                    self.lexer.next();
+                    loop_start
+                } else {
+                    // Parse increment
+                    let body_jump = vm.chunk.emit_jump(Opcode::Jump, lhs.line);
+                    let increment_start = vm.chunk.get_cur_addr();
+
+                    let name = self
+                        .lexer
+                        .expect(TokenType::Identifier, "expected assignment")
+                        .wrap_err("in for increment")?;
+
+                    self.set_variable(vm, name).wrap_err("in for increment")?;
+
+                    // Consume ')'
+                    self.lexer
+                        .expect(TokenType::RightParen, "expected )")
+                        .wrap_err("after for clauses")?;
+
+                    vm.chunk.emit_loop(loop_start, lhs.line);
+                    vm.chunk.patch_jump(body_jump);
+                    increment_start
+                };
+
+                self.stmt_within(vm, 0)?;
+                vm.chunk.emit_loop(increment_start, lhs.line);
+
+                if let Some(exit_jump) = exit_jump {
+                    vm.chunk.patch_jump(exit_jump);
+                    vm.chunk.emit_op(Opcode::Pop, lhs.line); // Pop the condition
+                }
+
+                // End scope
+                self.end_scope(vm);
+            }
+
             _ => {
                 return Err(miette::miette! {
                     labels = vec![
@@ -329,6 +422,23 @@ impl<'de> Parser<'de> {
         }
 
         Ok(())
+    }
+
+    fn end_scope(&mut self, vm: &mut vm::VM) {
+        // End scope
+        self.compiler.scope_depth -= 1;
+
+        // Remove locals that belong to the closed scope
+        while self.compiler.locals.len() > 0 {
+            let local = self.compiler.locals.last().unwrap();
+
+            if local.depth <= self.compiler.scope_depth {
+                break;
+            }
+
+            vm.chunk.emit_op(Opcode::Pop, local.name_token.line);
+            self.compiler.locals.pop();
+        }
     }
 
     pub fn expr(&mut self, vm: &mut vm::VM) -> Result<(), miette::Error> {
