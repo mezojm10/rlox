@@ -290,6 +290,32 @@ impl<'de> Parser<'de> {
                 vm.chunk.patch_jump(else_jump);
             }
 
+            // Loops
+            TokenType::While => {
+                let loop_start = vm.chunk.get_cur_addr();
+
+                // Consume '('
+                self.lexer
+                    .expect(TokenType::LeftParen, "expected (")
+                    .wrap_err("after while")?;
+
+                // Parse condition
+                self.expr(vm).wrap_err("in while condition")?;
+
+                // Consume ')'
+                self.lexer
+                    .expect(TokenType::RightParen, "expected )")
+                    .wrap_err("after while condition")?;
+
+                let exit_jump = vm.chunk.emit_jump(Opcode::JumpIfFalse, lhs.line);
+                vm.chunk.emit_op(Opcode::Pop, lhs.line);
+                self.stmt_within(vm, 0)?;
+                vm.chunk.emit_loop(loop_start, lhs.line);
+
+                vm.chunk.patch_jump(exit_jump);
+                vm.chunk.emit_op(Opcode::Pop, lhs.line);
+            }
+
             _ => {
                 return Err(miette::miette! {
                     labels = vec![

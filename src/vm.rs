@@ -30,6 +30,7 @@ pub enum Opcode {
     SetLocal = 24,
     Jump = 25,
     JumpIfFalse = 26,
+    Loop = 27,
 }
 
 impl Opcode {
@@ -62,6 +63,7 @@ impl Opcode {
             24 => Some(Self::SetLocal),
             25 => Some(Self::Jump),
             26 => Some(Self::JumpIfFalse),
+            27 => Some(Self::Loop),
             _ => None,
         }
     }
@@ -227,6 +229,10 @@ impl VM {
                     if let Value::Nil | Value::Bool(false) = self.peek() {
                         self.ip += offset as usize;
                     }
+                }
+                Some(Opcode::Loop) => {
+                    let offset = self.read_u16();
+                    self.ip -= offset as usize;
                 }
                 Some(Opcode::DefineGlobal) => {
                     let value = self.chunk.constants[self.chunk.codes[self.ip] as usize];
@@ -644,6 +650,10 @@ impl Chunk {
         }
     }
 
+    pub fn get_cur_addr(&self) -> usize {
+        self.codes.len()
+    }
+
     pub fn emit_op(&mut self, code: Opcode, line: usize) {
         self.codes.push(u8::from(code));
         self.lines.push(line);
@@ -688,6 +698,22 @@ impl Chunk {
 
     pub fn emit_return(&mut self, line: usize) {
         self.emit_op(Opcode::Return, line);
+    }
+
+    pub fn emit_loop(&mut self, loop_start: usize, line: usize) {
+        self.emit_op(Opcode::Loop, line);
+
+        let jump_offset = self.codes.len() - loop_start + 2;
+        if jump_offset > u16::MAX as usize {
+            // TODO: Use miette to report the location of the error in the source code
+            panic!("Too much code in loop body");
+        }
+
+        let offset_bytes = (jump_offset as u16).to_be_bytes();
+        self.codes.push(offset_bytes[0]);
+        self.codes.push(offset_bytes[1]);
+        self.lines.push(line);
+        self.lines.push(line);
     }
 
     pub fn emit_jump(&mut self, opcode: Opcode, line: usize) -> usize {
@@ -777,6 +803,18 @@ impl Chunk {
                     "OP_JUMP_IF_FALSE",
                     offset,
                     offset + 3 + jump as usize
+                );
+                3
+            }
+            Some(Opcode::Loop) => {
+                let high_byte = self.codes[offset + 1] as u16;
+                let low_byte = self.codes[offset + 2] as u16;
+                let jump = (high_byte << 8) | low_byte;
+                println!(
+                    "{:16} {:4} -> {}",
+                    "OP_LOOP",
+                    offset,
+                    offset + 3 - jump as usize,
                 );
                 3
             }
