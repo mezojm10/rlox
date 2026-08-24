@@ -36,7 +36,12 @@ fn repl() -> Result<()> {
             break;
         }
 
-        compile(&mut vm, &buffer)?;
+        // Compile and run the code, if it fails, rollback the VM state to the previous checkpoint
+        let cp = vm.checkpoint();
+        if let Err(e) = compile(&mut vm, &buffer) {
+            vm.rollback(cp);
+            println!("{e:?}");
+        }
 
         buffer.clear();
     }

@@ -75,6 +75,12 @@ impl From<Opcode> for u8 {
     }
 }
 
+pub struct Checkpoint {
+    codes: usize,
+    constants: usize,
+    lines: usize,
+}
+
 pub struct VM {
     pub chunk: Chunk,
     ip: usize,
@@ -96,6 +102,19 @@ impl VM {
             strings: HashSet::new(),
             globals: HashMap::new(),
         }
+    }
+
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            codes: self.chunk.codes.len(),
+            constants: self.chunk.constants.len(),
+            lines: self.chunk.lines.len(),
+        }
+    }
+
+    pub fn rollback(&mut self, cp: Checkpoint) {
+        self.chunk.truncate_to(&cp);
+        self.ip = self.chunk.codes.len();
     }
 
     fn push(&mut self, value: Value) {
@@ -191,7 +210,8 @@ impl VM {
     }
 
     pub fn interpret(&mut self) -> miette::Result<()> {
-        self.chunk.disassemble("Test Chunk", &self.stack);
+        self.chunk
+            .disassemble_from("Test Chunk", &self.stack, self.ip);
         let err = |msg: &str, line: usize| Err(miette::miette!("[line {line}] {msg}"));
         loop {
             let instruction = self.chunk.codes[self.ip];
@@ -587,6 +607,14 @@ pub struct Chunk {
     lines: Vec<usize>,
 }
 
+impl Chunk {
+    fn truncate_to(&mut self, cp: &Checkpoint) {
+        self.codes.truncate(cp.codes);
+        self.constants.truncate(cp.constants);
+        self.lines.truncate(cp.lines);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Value {
     Number(f64),
@@ -738,10 +766,10 @@ impl Chunk {
     }
 
     /// For debugging purposes. Prints the opcodes in the vm
-    fn disassemble(&self, name: &str, stack: &[Value]) {
+    fn disassemble_from(&self, name: &str, stack: &[Value], start_offset: usize) {
         println!("== {} ==", name);
 
-        let mut offset = 0;
+        let mut offset = start_offset;
         loop {
             if offset >= self.codes.len() {
                 return;
