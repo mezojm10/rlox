@@ -350,7 +350,6 @@ impl VM {
                     match (x, y) {
                         (Value::Number(a), Value::Number(b)) => {
                             self.push(Value::Number(a - b));
-                            continue;
                         }
                         _ => {
                             return err(
@@ -371,7 +370,6 @@ impl VM {
                     match (x, y) {
                         (Value::Number(a), Value::Number(b)) => {
                             self.push(Value::Number(a * b));
-                            continue;
                         }
                         _ => {
                             return err(
@@ -392,7 +390,6 @@ impl VM {
                     match (x, y) {
                         (Value::Number(a), Value::Number(b)) => {
                             self.push(Value::Number(a / b));
-                            continue;
                         }
                         (x, y) => {
                             return err(

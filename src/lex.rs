@@ -220,7 +220,7 @@ impl<'de> Lexer<'de> {
     fn advance(&mut self) -> Option<char> {
         let c = self.rest.chars().next()?;
         self.rest = &self.rest[c.len_utf8()..];
-        self.current += 1;
+        self.current += c.len_utf8();
         Some(c)
     }
 
